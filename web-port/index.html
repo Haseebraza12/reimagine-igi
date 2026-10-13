@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>IGI Web — Vertical Slice</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        background: #000;
+        height: 100%;
+      }
+      #app {
+        width: 100vw;
+        height: 100vh;
+      }
+      canvas {
+        display: block;
+      }
+      #hud {
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        top: 0;
+        pointer-events: none;
+        font-family: "Courier New", monospace;
+        color: #d8f0d8;
+        text-shadow: 0 0 4px #000;
+      }
+      #crosshair {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        font-size: 22px;
+        opacity: 0.85;
+      }
+      #status {
+        position: absolute;
+        left: 16px;
+        bottom: 12px;
+        font-size: 14px;
+        line-height: 1.5;
+      }
+      #objective {
+        position: absolute;
+        right: 16px;
+        top: 12px;
+        font-size: 13px;
+        text-align: right;
+        opacity: 0.9;
+      }
+      #overlay {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 28px;
+        letter-spacing: 3px;
+        background: rgba(0, 0, 0, 0.35);
+      }
+      #overlay.hidden {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="hud">
+      <div id="crosshair">+</div>
+      <div id="status"></div>
+      <div id="objective"></div>
+      <div id="overlay" class="hidden"></div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

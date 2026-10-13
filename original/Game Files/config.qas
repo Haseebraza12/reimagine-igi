@@ -1,0 +1,522 @@
+           PUSHI   GOStart
+           CALL    (Arg0A7F6F4C)
+           BRA     AC0A80BACC
+Arg0A7F6F4C:
+           PUSH    0
+           BRK     
+AC0A80BACC:
+           POP     
+           PUSHI   GOContentControlPW
+           CALL    (Arg0A80BBEC)
+           BRA     AC0A7F7AE4
+Arg0A80BBEC:
+           PUSHS   ""
+           BRK     
+AC0A7F7AE4:
+           POP     
+           PUSHI   GOPlayer
+           CALL    (Arg0A7F7C04)
+           BRA     AC0A7F7C94
+Arg0A7F7C04:
+           PUSHS   "Joe"
+           BRK     
+AC0A7F7C94:
+           POP     
+           PUSHI   GOActiveMission
+           CALL    (Arg0A7F7DB4)
+           BRA     AC0A7F7E44
+Arg0A7F7DB4:
+           PUSH    1
+           BRK     
+AC0A7F7E44:
+           POP     
+           PUSHI   GOInMouInv
+           CALL    (Arg0A7F7F64)
+           BRA     AC0C0908C4
+Arg0A7F7F64:
+           PUSH    1
+           BRK     
+AC0C0908C4:
+           POP     
+           PUSHI   GOInMouSens
+           CALL    (Arg0C0909E4)
+           BRA     AC0C090A74
+Arg0C0909E4:
+           PUSHF   0.400000
+           BRK     
+AC0C090A74:
+           POP     
+           PUSHI   GOInRemap
+           CALL    (Arg0C090B94, Arg0C090BFC, Arg0C090C74)
+           BRA     AC0C090D14
+Arg0C090B94:
+           PUSHI   MoveLeft
+           BRK     
+Arg0C090BFC:
+           PUSHI   INPUTPORT_DEVICE_KEYBOARD
+           BRK     
+Arg0C090C74:
+           PUSHI   KEY_LEFT
+           BRK     
+AC0C090D14:
+           POP     
+           PUSHI   GOInRemap
+           CALL    (Arg0C090E34, Arg0C090E9C, Arg0C090F14)
+           BRA     AC0C090FB4
+Arg0C090E34:
+           PUSHI   MoveRight
+           BRK     
+Arg0C090E9C:
+           PUSHI   INPUTPORT_DEVICE_KEYBOARD
+           BRK     
+Arg0C090F14:
+           PUSHI   KEY_RIGHT
+           BRK     
+AC0C090FB4:
+           POP     
+           PUSHI   GOInRemap
+           CALL    (Arg0C35B10C, Arg0C35B164, Arg0C35B1DC)
+           BRA     AC0C35B26C
+Arg0C35B10C:
+           PUSHI   MoveUp
+           BRK     
+Arg0C35B164:
+           PUSHI   INPUTPORT_DEVICE_KEYBOARD
+           BRK     
+Arg0C35B1DC:
+           PUSHI   KEY_UP
+           BRK     
+AC0C35B26C:
+           POP     
+           PUSHI   GOInRemap
+           CALL    (Arg0C35B38C, Arg0C35B3F4, Arg0C35B46C)
+           BRA     AC0C35B50C
+Arg0C35B38C:
+           PUSHI   MoveDown
+           BRK     
+Arg0C35B3F4:
+           PUSHI   INPUTPORT_DEVICE_KEYBOARD
+           BRK     
+Arg0C35B46C:
+           PUSHI   KEY_DOWN
+           BRK     
+AC0C35B50C:
+           POP     
+           PUSHI   GOInRemap
+           CALL    (Arg0C35B62C, Arg0C35B684, Arg0C35B6EC)
+           BRA     AC0C35B78C
+Arg0C35B62C:
+           PUSHI   Fire
+           BRK     
+Arg0C35B684:
+           PUSHI   INPUTPORT_DEVICE_MOUSE
+           BRK     
+Arg0C35B6EC:
+           PUSHI   MOUSE_BUTTON_1
+           BRK     
+AC0C35B78C:
+           POP     
+           PUSHI   GOInRemap
+           CALL    (Arg0C35B8AC, Arg0C35B904, Arg0C35B97C)
+           BRA     AC0C35BA1C
+Arg0C35B8AC:
+           PUSHI   Reload
+           BRK     
+Arg0C35B904:
+           PUSHI   INPUTPORT_DEVICE_KEYBOARD
+           BRK     
+Arg0C35B97C:
+           PUSHI   KEY_RETURN
+           BRK     
+AC0C35BA1C:
+           POP     
+           PUSHI   GOInRemap
+           CALL    (Arg0C35BB3C, Arg0C35BBA4, Arg0C35BC1C)
+           BRA     AC0C35BCBC
+Arg0C35BB3C:
+           PUSHI   Activate
+           BRK     
+Arg0C35BBA4:
+           PUSHI   INPUTPORT_DEVICE_KEYBOARD
+           BRK     
+Arg0C35BC1C:
+           PUSHI   KEY_RIGHT_SHIFT
+           BRK     
+AC0C35BCBC:
+           POP     
+           PUSHI   GOInRemap
+           CALL    (Arg0C35BDDC, Arg0C35BE34, Arg0C35BEAC)
+           BRA     AC0C35BF4C
+Arg0C35BDDC:
+           PUSHI   Crouch
+           BRK     
+Arg0C35BE34:
+           PUSHI   INPUTPORT_DEVICE_KEYBOARD
+           BRK     
+Arg0C35BEAC:
+           PUSHI   KEY_RIGHT_CTRL
+           BRK     
+AC0C35BF4C:
+           POP     
+           PUSHI   GOInRemap
+           CALL    (Arg0A7F98E4, Arg0A7F993C, Arg0A7F99B4)
+           BRA     AC0A7F9A54
+Arg0A7F98E4:
+           PUSHI   Jump
+           BRK     
+Arg0A7F993C:
+           PUSHI   INPUTPORT_DEVICE_KEYBOARD
+           BRK     
+Arg0A7F99B4:
+           PUSHI   KEY_NUMPAD0
+           BRK     
+AC0A7F9A54:
+           POP     
+           PUSHI   GOInRemap
+           CALL    (Arg0A7F9B74, Arg0A7F9BDC, Arg0A7F9C44)
+           BRA     AC0A7F9CE4
+Arg0A7F9B74:
+           PUSHI   NextWeapon
+           BRK     
+Arg0A7F9BDC:
+           PUSHI   INPUTPORT_DEVICE_MOUSE
+           BRK     
+Arg0A7F9C44:
+           PUSHI   MOUSE_BUTTON_2
+           BRK     
+AC0A7F9CE4:
+           POP     
+           PUSHI   GOInRemap
+           CALL    (Arg0A7F9E04, Arg0A7F9E6C, Arg0A7F9EE4)
+           BRA     AC0A7F9F74
+Arg0A7F9E04:
+           PUSHI   PrevWeapon
+           BRK     
+Arg0A7F9E6C:
+           PUSHI   INPUTPORT_DEVICE_KEYBOARD
+           BRK     
+Arg0A7F9EE4:
+           PUSHI   KEY_O
+           BRK     
+AC0A7F9F74:
+           POP     
+           PUSHI   GOInRemap
+           CALL    (Arg0A7FA094, Arg0A7FA0FC, Arg0A7FA174)
+           BRA     AC0A7FA214
+Arg0A7FA094:
+           PUSHI   AlternateFire
+           BRK     
+Arg0A7FA0FC:
+           PUSHI   INPUTPORT_DEVICE_KEYBOARD
+           BRK     
+Arg0A7FA174:
+           PUSHI   KEY_BACKSPACE
+           BRK     
+AC0A7FA214:
+           POP     
+           PUSHI   GOInRemap
+           CALL    (Arg0A7FA334, Arg0A7FA38C, Arg0A7FA404)
+           BRA     AC0A7FA4A4
+Arg0A7FA334:
+           PUSHI   Peek
+           BRK     
+Arg0A7FA38C:
+           PUSHI   INPUTPORT_DEVICE_KEYBOARD
+           BRK     
+Arg0A7FA404:
+           PUSHI   KEY_NUMPAD1
+           BRK     
+AC0A7FA4A4:
+           POP     
+           PUSHI   GOInRemap
+           CALL    (Arg0A7FA5C4, Arg0A7FA62C, Arg0A7FA6A4)
+           BRA     AC0A7FA744
+Arg0A7FA5C4:
+           PUSHI   Binoculars
+           BRK     
+Arg0A7FA62C:
+           PUSHI   INPUTPORT_DEVICE_KEYBOARD
+           BRK     
+Arg0A7FA6A4:
+           PUSHI   KEY_SPACE
+           BRK     
+AC0A7FA744:
+           POP     
+           PUSHI   GOInRemap
+           CALL    (Arg0A7FA864, Arg0A7FA8CC, Arg0A7FA944)
+           BRA     AC0A7FA9D4
+Arg0A7FA864:
+           PUSHI   MapComputer
+           BRK     
+Arg0A7FA8CC:
+           PUSHI   INPUTPORT_DEVICE_KEYBOARD
+           BRK     
+Arg0A7FA944:
+           PUSHI   KEY_C
+           BRK     
+AC0A7FA9D4:
+           POP     
+           PUSHI   GOInRemap
+           CALL    (Arg0A7FAAF4, Arg0A7FAB5C, Arg0A7FABD4)
+           BRA     AC0A7FAC64
+Arg0A7FAAF4:
+           PUSHI   ToggleWalkRun
+           BRK     
+Arg0A7FAB5C:
+           PUSHI   INPUTPORT_DEVICE_KEYBOARD
+           BRK     
+Arg0A7FABD4:
+           PUSHI   KEY_W
+           BRK     
+AC0A7FAC64:
+           POP     
+           PUSHI   GOInRemap
+           CALL    (Arg0A7FAD84, Arg0A7FADDC, Arg0A7FAE54)
+           BRA     AC0A7FAEF4
+Arg0A7FAD84:
+           PUSHI   ZoomIn
+           BRK     
+Arg0A7FADDC:
+           PUSHI   INPUTPORT_DEVICE_KEYBOARD
+           BRK     
+Arg0A7FAE54:
+           PUSHI   KEY_PAGEUP
+           BRK     
+AC0A7FAEF4:
+           POP     
+           PUSHI   GOInRemap
+           CALL    (Arg0A7FB014, Arg0A7FB06C, Arg0A7FB0E4)
+           BRA     AC0A7FB184
+Arg0A7FB014:
+           PUSHI   ZoomOut
+           BRK     
+Arg0A7FB06C:
+           PUSHI   INPUTPORT_DEVICE_KEYBOARD
+           BRK     
+Arg0A7FB0E4:
+           PUSHI   KEY_PAGEDOWN
+           BRK     
+AC0A7FB184:
+           POP     
+           PUSHI   GOInRemap
+           CALL    (Arg0A7FB2A4, Arg0A7FB30C, Arg0A7FB384)
+           BRA     AC0A7FB414
+Arg0A7FB2A4:
+           PUSHI   WeaponCategory1
+           BRK     
+Arg0A7FB30C:
+           PUSHI   INPUTPORT_DEVICE_KEYBOARD
+           BRK     
+Arg0A7FB384:
+           PUSHI   KEY_1
+           BRK     
+AC0A7FB414:
+           POP     
+           PUSHI   GOInRemap
+           CALL    (Arg0A7FB534, Arg0A7FB59C, Arg0A7FB614)
+           BRA     AC0A7FB6A4
+Arg0A7FB534:
+           PUSHI   WeaponCategory2
+           BRK     
+Arg0A7FB59C:
+           PUSHI   INPUTPORT_DEVICE_KEYBOARD
+           BRK     
+Arg0A7FB614:
+           PUSHI   KEY_2
+           BRK     
+AC0A7FB6A4:
+           POP     
+           PUSHI   GOInRemap
+           CALL    (Arg0A7FB7C4, Arg0A7FB82C, Arg0A7FB8A4)
+           BRA     AC0A7FB934
+Arg0A7FB7C4:
+           PUSHI   WeaponCategory3
+           BRK     
+Arg0A7FB82C:
+           PUSHI   INPUTPORT_DEVICE_KEYBOARD
+           BRK     
+Arg0A7FB8A4:
+           PUSHI   KEY_3
+           BRK     
+AC0A7FB934:
+           POP     
+           PUSHI   GOInRemap
+           CALL    (Arg0A7FBA54, Arg0A7FBABC, Arg0A7FBB34)
+           BRA     AC0A7FBBC4
+Arg0A7FBA54:
+           PUSHI   WeaponCategory4
+           BRK     
+Arg0A7FBABC:
+           PUSHI   INPUTPORT_DEVICE_KEYBOARD
+           BRK     
+Arg0A7FBB34:
+           PUSHI   KEY_4
+           BRK     
+AC0A7FBBC4:
+           POP     
+           PUSHI   GOInRemap
+           CALL    (Arg0A7FBCE4, Arg0A7FBD4C, Arg0A7FBDC4)
+           BRA     AC119C3024
+Arg0A7FBCE4:
+           PUSHI   WeaponCategory5
+           BRK     
+Arg0A7FBD4C:
+           PUSHI   INPUTPORT_DEVICE_KEYBOARD
+           BRK     
+Arg0A7FBDC4:
+           PUSHI   KEY_5
+           BRK     
+AC119C3024:
+           POP     
+           PUSHI   GOInRemap
+           CALL    (Arg0A816CEC, Arg0A816D54, Arg0A816DCC)
+           BRA     AC0A816E5C
+Arg0A816CEC:
+           PUSHI   WeaponCategory6
+           BRK     
+Arg0A816D54:
+           PUSHI   INPUTPORT_DEVICE_KEYBOARD
+           BRK     
+Arg0A816DCC:
+           PUSHI   KEY_6
+           BRK     
+AC0A816E5C:
+           POP     
+           PUSHI   GOInRemap
+           CALL    (Arg0A816F7C, Arg0A816FE4, Arg0A81705C)
+           BRA     AC0A8170EC
+Arg0A816F7C:
+           PUSHI   WeaponCategory7
+           BRK     
+Arg0A816FE4:
+           PUSHI   INPUTPORT_DEVICE_KEYBOARD
+           BRK     
+Arg0A81705C:
+           PUSHI   KEY_7
+           BRK     
+AC0A8170EC:
+           POP     
+           PUSHI   GOInRemap
+           CALL    (Arg0A81720C, Arg0A817274, Arg0A8172EC)
+           BRA     AC0A81737C
+Arg0A81720C:
+           PUSHI   WeaponCategory8
+           BRK     
+Arg0A817274:
+           PUSHI   INPUTPORT_DEVICE_KEYBOARD
+           BRK     
+Arg0A8172EC:
+           PUSHI   KEY_8
+           BRK     
+AC0A81737C:
+           POP     
+           PUSHI   GOInRemap
+           CALL    (Arg0A81749C, Arg0A817504, Arg0A81757C)
+           BRA     AC0A81760C
+Arg0A81749C:
+           PUSHI   WeaponCategory9
+           BRK     
+Arg0A817504:
+           PUSHI   INPUTPORT_DEVICE_KEYBOARD
+           BRK     
+Arg0A81757C:
+           PUSHI   KEY_9
+           BRK     
+AC0A81760C:
+           POP     
+           PUSHI   GOGfxDisp
+           CALL    (Arg0A81772C, Arg0A817784, Arg0A8177DC)
+           BRA     AC0A81786C
+Arg0A81772C:
+           PUSH    640
+           BRK     
+Arg0A817784:
+           PUSH    480
+           BRK     
+Arg0A8177DC:
+           PUSH    32
+           BRK     
+AC0A81786C:
+           POP     
+           PUSHI   GOGfxDevice
+           CALL    (Arg0A81798C)
+           BRA     AC0A817A3C
+Arg0A81798C:
+           PUSHS   "{00000000-0000-0000-0000-000000000000}"
+           BRK     
+AC0A817A3C:
+           POP     
+           PUSHI   GOGfxGamma
+           CALL    (Arg0A817B5C)
+           BRA     AC0A817BEC
+Arg0A817B5C:
+           PUSHF   1.000000
+           BRK     
+AC0A817BEC:
+           POP     
+           PUSHI   GOGfxPerformance
+           CALL    (Arg0A817D0C)
+           BRA     AC0A817D9C
+Arg0A817D0C:
+           PUSH    0
+           BRK     
+AC0A817D9C:
+           POP     
+           PUSHI   GOGameLang
+           CALL    (Arg0A817EBC)
+           BRA     AC0A817F4C
+Arg0A817EBC:
+           PUSHI   USA
+           BRK     
+AC0A817F4C:
+           POP     
+           PUSHI   GOGameDiff
+           CALL    (Arg0A81806C)
+           BRA     AC0A8180FC
+Arg0A81806C:
+           PUSHI   GD_2
+           BRK     
+AC0A8180FC:
+           POP     
+           PUSHI   GOIsBlood
+           CALL    (Arg0A81821C)
+           BRA     AC0A8182AC
+Arg0A81821C:
+           PUSHI   TRUE
+           BRK     
+AC0A8182AC:
+           POP     
+           PUSHI   GOSoundSpeech
+           CALL    (Arg0A8183CC, Arg0A818424)
+           BRA     AC0A8184B4
+Arg0A8183CC:
+           PUSH    1
+           BRK     
+Arg0A818424:
+           PUSHF   1.000000
+           BRK     
+AC0A8184B4:
+           POP     
+           PUSHI   GOSoundMusic
+           CALL    (Arg0A8185D4, Arg0A81862C)
+           BRA     AC0A8186BC
+Arg0A8185D4:
+           PUSH    1
+           BRK     
+Arg0A81862C:
+           PUSHF   1.000000
+           BRK     
+AC0A8186BC:
+           POP     
+           PUSHI   GOSoundFX
+           CALL    (Arg0A8187DC, Arg0A818834)
+           BRA     AC0A8188C4
+Arg0A8187DC:
+           PUSH    1
+           BRK     
+Arg0A818834:
+           PUSHF   1.000000
+           BRK     
+AC0A8188C4:
+           POP     
+           BRK     

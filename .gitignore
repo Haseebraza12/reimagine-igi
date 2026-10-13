@@ -1,0 +1,7 @@
+/Game Files/
+/research/
+/tools/rea/node_modules/
+/tools/native/
+__pycache__/
+*.pyc
+

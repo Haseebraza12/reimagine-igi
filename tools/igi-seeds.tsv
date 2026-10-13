@@ -1,0 +1,7 @@
+# Explicit analysis hypotheses from bounded objdump registration evidence.
+# These are caller-selected entry points, not automatically recovered names.
+0x410160	function
+0x4bc890	function
+0x4bc980	function
+0x4aead0	function
+0x4aec90	function
