@@ -1,7 +1,18 @@
 """Conservative, static LOOP v8 reader; never executes bytecode or host calls.
 
-Only encodings corroborated by config.qsc + config.qas + config.qvm are named.
-In particular 0x02 and 0x2c remain unknown. See docs/qvm.md for evidence/limits.
+Only encodings corroborated by shipped evidence are named:
+ - 0x00/03/04/05/09/0d/0f/10/12/14/18 are corroborated by the paired
+   config.qsc + config.qas + config.qvm triad (see docs/qvm.md).
+ - 0x0a (PUSHS16) is corroborated by objects.qvm blocks whose u16 literal
+   indices start at exactly 256 and match DConv-decompiled strings.
+ - 0x2c (MINUS) is corroborated by objects.qvm `PUSHF <positive>; 2c; BRK`
+   pairs that DConv decompiles as negative floats (objects.qsc), plus the
+   QVM_REFERENCE V5 opcode table. The reader decodes MINUS as an
+   instruction but deliberately does NOT fold it into a value in
+   constant_argument(); see docs/qvm-findings.md.
+ - 0x02 remains UNKNOWN: QVM_REFERENCE calls it PUSH u32 and the corpus
+   suggests the same, but config.qvm never contains it, so the paired
+   ground truth cannot verify it here.
 """
 import argparse
 import json
@@ -66,19 +77,23 @@ class QVM:
             if isinstance(value, float) and not math.isfinite(value):
                 raise FormatError("non-finite float literal is unsupported")
             item.update(mnemonic=mnemonic, size=size, kind="number", value=value)
-        elif opcode in (0x09, 0x0d):
-            index, size = operand("<B")
-            entries = self.strings if opcode == 0x09 else self.symbols
+        elif opcode in (0x09, 0x0a, 0x0d):
+            # 0x09/0x0a index the literal-string table (u8/u16); 0x0d the
+            # identifier table (u8). objects.qvm uses 0x0a for every string
+            # index >= 256 (first is 256 -> "Playback").
+            fmt = "<H" if opcode == 0x0a else "<B"
+            index, size = operand(fmt)
+            entries = self.symbols if opcode == 0x0d else self.strings
             if index >= len(entries):
                 raise FormatError(f"reference index outside table at code {offset:#x}")
-            item.update(mnemonic="PUSHS" if opcode == 0x09 else "PUSHI",
-                        size=size, index=index,
-                        kind="string" if opcode == 0x09 else "symbol")
-            if opcode == 0x09:
-                item.update(entries[index])
-            else:
+            mnemonic = {0x09: "PUSHS", 0x0a: "PUSHS16", 0x0d: "PUSHI"}[opcode]
+            item.update(mnemonic=mnemonic, size=size, index=index,
+                        kind="symbol" if opcode == 0x0d else "string")
+            if opcode == 0x0d:
                 item.update(value=entries[index]["name"],
                             symbol_file_offset=entries[index]["offset"])
+            else:
+                item.update(entries[index])
         elif opcode == 0x14:
             displacement, size = operand("<i")
             target = offset + size + displacement
@@ -95,6 +110,14 @@ class QVM:
             if any(target >= len(self.code) for target in targets):
                 raise FormatError("CALL argument target outside code")
             item.update(mnemonic="CALL", size=size, argument_code_offsets=targets)
+        elif opcode == 0x2c:
+            # Unary negate (QVM_REFERENCE V5 MINUS). Paired evidence:
+            # objects.qvm code 0x23704 (`05 c4 0f 55 4c 2c 00` = PUSHF
+            # 55852816.0; MINUS; BRK) pairs with objects.qsc:1175, which
+            # prints -55852816.0 for the HumanPlayer Y position. The
+            # instruction is named and sized here, but constant_argument
+            # still refuses to fold literal+MINUS into a value.
+            item.update(mnemonic="MINUS", size=1, role="unary negate")
         else:
             item.update(mnemonic="UNKNOWN", status="unsupported opcode; size unknown")
         if "size" in item:
@@ -260,7 +283,7 @@ def validate_config(data, source, assembly):
             rows.append(text.split(None, 1))
     if len(rows) != len(instructions):
         raise FormatError("assembly instruction count mismatch")
-    aliases = {"PUSH_U8": "PUSH", "PUSH_U16": "PUSH"}
+    aliases = {"PUSH_U8": "PUSH", "PUSH_U16": "PUSH", "PUSHS16": "PUSHS"}
     for row, ins in zip(rows, instructions):
         mnemonic, operand = row[0], row[1] if len(row) == 2 else ""
         actual = ins["mnemonic"]

@@ -1,61 +1,27 @@
 /**
  * Loader layer — IGI binary format parsers exposed to the engine.
  *
- * NOTE: This is a STUB created at scaffold time so the engine compiles while
- * the real implementation is built in parallel. The loaders agent replaces the
- * body of every function here; signatures are frozen by docs/loader-api.md.
+ * Public API frozen by docs/loader-api.md; engine imports ONLY this module
+ * plus src/contracts.ts. See the individual modules for measured-format
+ * documentation and confidence notes:
+ *
+ *   ilff.ts      ILFF/IRES .res containers (port of tools/igi_formats.py)
+ *   loop-tex.ts  LOOP v11 .tex bitmaps   (port of tools/igi_formats.py)
+ *   hmp.ts       .hmp heightfields       (measured from real game data)
+ *   lmp.ts       .lmp lightmap tiles     (measured + QSC cross-checked)
+ *   terrain.ts   loadTerrain assembly with manifest precedence
+ *   manifest.ts  level manifest.json fetching
+ *   http-source.ts HTTP asset source ("/raw/", "/assets/", ...)
+ *
+ * NOTE: fs-source.ts (createFsAssetSource) is intentionally NOT re-exported
+ * here so the browser bundle never pulls in node:fs; tests import it
+ * directly from "../src/loaders/fs-source".
  */
-import type {
-  DecodedTexture,
-  IAssetSource,
-  LevelManifest,
-  TerrainData,
-} from "../contracts";
-
-function notImplemented(name: string): never {
-  throw new Error(`loaders/${name} not implemented yet`);
-}
-
-export function createHttpAssetSource(baseUrl?: string): IAssetSource {
-  void baseUrl;
-  notImplemented("createHttpAssetSource");
-}
-
-export function readIlffMembers(
-  _buffer: ArrayBuffer,
-): Array<{ name: string; offset: number; size: number; payload: ArrayBuffer }> {
-  notImplemented("readIlffMembers");
-}
-
-export function decodeTex(_buffer: ArrayBuffer): DecodedTexture {
-  notImplemented("decodeTex");
-}
-
-export function readHmp(_buffer: ArrayBuffer): {
-  size: number;
-  heights: Float32Array;
-} {
-  notImplemented("readHmp");
-}
-
-export function readLmp(_buffer: ArrayBuffer): {
-  size: number;
-  intensities: Uint8Array;
-} {
-  notImplemented("readLmp");
-}
-
-export function loadTerrain(
-  _rawSource: IAssetSource,
-  _assetsSource: IAssetSource,
-  _spec: LevelManifest["terrain"],
-): Promise<TerrainData> {
-  notImplemented("loadTerrain");
-}
-
-export function loadLevelManifest(
-  _assetsSource: IAssetSource,
-  _name: string,
-): Promise<LevelManifest | null> {
-  notImplemented("loadLevelManifest");
-}
+export type { IlffMember } from "./ilff";
+export { readIlffMembers } from "./ilff";
+export { decodeTex } from "./loop-tex";
+export { readHmp } from "./hmp";
+export { readLmp } from "./lmp";
+export { createHttpAssetSource } from "./http-source";
+export { loadTerrain } from "./terrain";
+export { loadLevelManifest } from "./manifest";
