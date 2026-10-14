@@ -56,8 +56,18 @@ class QVMTests(unittest.TestCase):
         for arg, raw in zip(recovered, args):
             self.assertEqual(qvm.data[arg["file_offset"]:arg["file_offset"] + arg["byte_count"]], raw)
 
-    def test_unknown_argument_does_not_guess_or_hide_later_constants(self):
+    def test_push_u32_reads_four_byte_immediate(self):
+        # Same bytes as humanplayer.qvm general-argument positions 41 and 42.
         qvm = QVM(fixture(call_code([b"\x02\xa0\x86\x01\x00\x00", b"\x03\x20\x00"])))
+        report = qvm.calls()
+        self.assertEqual(report["status"], "complete")
+        first, second = report["calls"][0]["arguments"]
+        self.assertEqual(first["instructions"][0]["mnemonic"], "PUSH_U32")
+        self.assertEqual(first["value"], 100000)
+        self.assertEqual(second["value"], 32)
+
+    def test_unknown_argument_does_not_guess_or_hide_later_constants(self):
+        qvm = QVM(fixture(call_code([b"\x7e\xa0\x86\x01\x00\x00", b"\x03\x20\x00"])))
         report = qvm.calls()
         self.assertTrue(report["top_level_complete"])
         self.assertEqual(report["status"], "partial")
@@ -67,9 +77,15 @@ class QVMTests(unittest.TestCase):
         self.assertEqual(second["value"], 32)
         self.assertEqual(qvm.disassemble()["status"], "partial")
 
-    def test_unknown_transformation_does_not_report_positive_input_as_value(self):
+    def test_minus_negates_a_numeric_literal(self):
         argument = b"\x05" + struct.pack("<f", 3.5) + b"\x2c\x00"
         arg = QVM(fixture(call_code([argument]))).calls()["calls"][0]["arguments"][0]
+        self.assertEqual(arg["status"], "recovered")
+        self.assertEqual(arg["value"], -3.5)
+        self.assertTrue(arg["negated"])
+
+    def test_minus_on_a_string_is_not_folded(self):
+        arg = QVM(fixture(call_code([b"\x09\x00\x2c\x00"]))).calls()["calls"][0]["arguments"][0]
         self.assertEqual(arg["status"], "unresolved")
         self.assertNotIn("value", arg)
 

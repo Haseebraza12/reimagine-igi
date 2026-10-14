@@ -14,4 +14,5 @@ web-port/public/raw/
 web-port/public/assets/
 web-port/public/generated/
 web-port/dist/
+*.tsbuildinfo
 

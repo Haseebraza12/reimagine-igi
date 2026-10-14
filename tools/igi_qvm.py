@@ -5,14 +5,17 @@ Only encodings corroborated by shipped evidence are named:
    config.qsc + config.qas + config.qvm triad (see docs/qvm.md).
  - 0x0a (PUSHS16) is corroborated by objects.qvm blocks whose u16 literal
    indices start at exactly 256 and match DConv-decompiled strings.
- - 0x2c (MINUS) is corroborated by objects.qvm `PUSHF <positive>; 2c; BRK`
-   pairs that DConv decompiles as negative floats (objects.qsc), plus the
-   QVM_REFERENCE V5 opcode table. The reader decodes MINUS as an
-   instruction but deliberately does NOT fold it into a value in
-   constant_argument(); see docs/qvm-findings.md.
- - 0x02 remains UNKNOWN: QVM_REFERENCE calls it PUSH u32 and the corpus
-   suggests the same, but config.qvm never contains it, so the paired
-   ground truth cannot verify it here.
+ - 0x2c (MINUS, unary negate) is corroborated by objects.qvm: all 2,380
+   `<number>; 2c; BRK` blocks decompile as the negated number in
+   objects.qsc, and a full call-tree parse of objects.qvm agrees with that
+   decompile on 18,105 of 18,127 nodes (the rest are later text edits).
+   constant_argument() folds exactly `<number literal>; MINUS; BRK` into a
+   negative value and records `negated: true`; see docs/qvm.md.
+ - 0x02 (PUSH_U32) is recovered, not paired-validated: config.qvm never
+   contains it. Every occurrence (humanplayer.qvm `02 a0 86 01 00 00`,
+   weaponconfig.qvm `02 70 94 00 00 00`) is an argument block that ends
+   with BRK exactly when the operand is four bytes, and QVM_REFERENCE names
+   the same encoding. Values read as unsigned 32-bit integers.
 """
 import argparse
 import json
@@ -70,9 +73,9 @@ class QVM:
             item.update(mnemonic="PUSH_CONST", size=1, kind="number",
                         value=0 if opcode == 0x0f else 1,
                         numeric_type="not encoded by observed instruction")
-        elif opcode in (0x03, 0x04, 0x05):
-            fmt, mnemonic = {3: ("<B", "PUSH_U8"), 4: ("<H", "PUSH_U16"),
-                             5: ("<f", "PUSHF")}[opcode]
+        elif opcode in (0x02, 0x03, 0x04, 0x05):
+            fmt, mnemonic = {2: ("<I", "PUSH_U32"), 3: ("<B", "PUSH_U8"),
+                             4: ("<H", "PUSH_U16"), 5: ("<f", "PUSHF")}[opcode]
             value, size = operand(fmt)
             if isinstance(value, float) and not math.isfinite(value):
                 raise FormatError("non-finite float literal is unsupported")
@@ -145,11 +148,18 @@ class QVM:
         item = {"index": index, "code_offset": start, "file_offset": self.base + start,
                 "byte_count": end - start, "bytes": self.code[start:end].hex(" "),
                 "status": "unresolved", "instructions": instructions}
-        if (decoded["status"] == "complete" and len(instructions) == 2
-                and instructions[0].get("kind") in ("number", "symbol", "string")
-                and instructions[1]["mnemonic"] == "BRK"):
+        negated = (decoded["status"] == "complete" and len(instructions) == 3
+                   and instructions[0].get("kind") == "number"
+                   and instructions[1]["mnemonic"] == "MINUS"
+                   and instructions[2]["mnemonic"] == "BRK")
+        if negated or (decoded["status"] == "complete" and len(instructions) == 2
+                       and instructions[0].get("kind") in ("number", "symbol", "string")
+                       and instructions[1]["mnemonic"] == "BRK"):
             literal = instructions[0]
-            item.update(status="recovered", kind=literal["kind"], value=literal["value"])
+            value = -literal["value"] if negated else literal["value"]
+            item.update(status="recovered", kind=literal["kind"], value=value)
+            if negated:
+                item["negated"] = True
             for key in ("literal_file_offset", "symbol_file_offset", "numeric_type"):
                 if key in literal:
                     item[key] = literal[key]
@@ -283,7 +293,7 @@ def validate_config(data, source, assembly):
             rows.append(text.split(None, 1))
     if len(rows) != len(instructions):
         raise FormatError("assembly instruction count mismatch")
-    aliases = {"PUSH_U8": "PUSH", "PUSH_U16": "PUSH", "PUSHS16": "PUSHS"}
+    aliases = {"PUSH_U8": "PUSH", "PUSH_U16": "PUSH", "PUSH_U32": "PUSH", "PUSHS16": "PUSHS"}
     for row, ins in zip(rows, instructions):
         mnemonic, operand = row[0], row[1] if len(row) == 2 else ""
         actual = ins["mnemonic"]

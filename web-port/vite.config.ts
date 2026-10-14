@@ -13,6 +13,16 @@ export default defineConfig({
   build: {
     target: "es2022",
     outDir: "dist",
+    rollupOptions: {
+      output: {
+        // Split the large, rarely-changing Three.js runtime into its own chunk
+        // so game-code edits don't force players to re-download it (caching).
+        manualChunks: {
+          three: ["three"],
+        },
+      },
+    },
+    chunkSizeWarningLimit: 600,
   },
   test: {
     environment: "node",
