@@ -212,9 +212,9 @@ describe.skipIf(!haveLevel)("level 1: humans on sight rays, perception phases, a
       damage.beginTick();
       enemies.beginNodeTick(1 / 30);
       let walked = false;
-      mission.setNodeTick((type, id) => {
+      mission.setNodeTick((type, id, node) => {
         walked = true;
-        if (type === "HumanSoldier" || type === "HumanAI") enemies.tickNode(id, type);
+        if (type === "HumanSoldier" || type === "HumanAI") enemies.tickNode(id, type, node);
       });
       mission.tick();
       mission.setNodeTick(null);

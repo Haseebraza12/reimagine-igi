@@ -1008,11 +1008,23 @@ LEFT / RIGHT / RETURN reach widgets through their selectable MenuFrame.
 | Invert Mouse | +0x538 (GOInMouInv). The menu shows **Yes when the field is 0** (`FUN_00403c90`). The shipped config.qvm stores 0 (config.qsc says 1) | look inversion; the map pointer un-negates it | `settings.snapshot().invertMouse` / `invertField` |
 | Mouse Sensitivity | +0x53c float (GOInMouSens 0.4) | look scale (the scale itself is not recovered) | `mouseSensitivity` 0..1 |
 | FX Volume | +0x224 (GOSoundFX) | DirectSound master scale `DAT_005417ec` (audio.md) via Game_UpdateVolume `FUN_00414bf0` | `fxVolume` → `mixer.fxVolume` |
-| Music Volume | +0x228 (GOSoundMusic) | only the Windows CD mixer line (`FUN_00494150`); the in-game music is unaffected | `musicVolume` (no audible effect is faithful) |
+| Music Volume | +0x228 (GOSoundMusic) | only the Windows CD mixer line (`FUN_00494150`); the in-game music is unaffected | `musicVolume`: levels the port's menu music (inferred, §13); the in-game music is unaffected, as in igi.exe |
 | Key bindings | binding table +0x234 (GOInRemap) | Input remap | `bindings` (GOInRemap form) |
 | Profiles | name, difficulty (GOGameDiff 0–2), active mission | LevelFlow difficulty (mission.md), mission list | `profileName`, `difficulty`, `activeMission` |
-| Gamma, performance flags, resolution, device | graphics block | renderer settings | stored, no port effect |
-| Blood, content password | +0x8, global | blood effects | stored |
+| Gamma, performance flags, resolution, device | graphics block | renderer settings | resolution: the frame size; performance flags: terrain threshold and model LOD scale at the next level load (bits 1/2/4/8 not modelled); gamma: no effect, as in igi.exe (no gamma ramp is set, [rendering.md](rendering.md)); device: WebGL only |
+| Blood, content password | +0x8, global | blood effects | blood: `effects.setBlood`; password: stored |
+
+**Cheats screen** (port addition, ui/cheat-menu.ts): the entry "Cheats" is
+added to Configuration (904, after Content Control) and to Game Paused
+(in-game 900, after Controls); it pushes screen 920, built like Content
+Control (915): one selectable row per cheat (MenuText + ToggleBox 980–984,
+LineUpMode 8, 29 px apart), OK = `MenuManager_PopScreen(TRUE)` (the toggles'
+`Config_CheatSet(i, this.isOn)` run), Cancel = `PopScreen(FALSE)`. The new text
+keys are not in menusystem.res; the port supplies them.
+
+The port keeps the profiles in the browser's storage (`MenuConfig.save` /
+`restore`, saved on every applied change) where igi.exe writes config.qsc;
+without storage every page load starts from config.qvm.
 
 `Config_GraphicOptionsGetPerfLevelFromFlags` = the first entry of
 {0, 0x41, 0x4d, 0xd, 0x60, 0xae, 0x9e} with the fewest differing bits;
@@ -1027,7 +1039,11 @@ names refused, settings copied from the active profile.
   registered whole when a MenuManager loads (`FUN_00416c40` →
   `FUN_004dd3b0`) and unregistered by `FUN_00416a70`, but the name
   "menu_music" occurs in no executable string, script (.qvm / .qsc) or other
-  file. Nothing plays it: the menus are silent apart from their click sounds.
+  file. Nothing in this exe plays it (no MCI_PLAY either; [audio.md](audio.md)
+  "Menu music"). The port loops it on the front-end menus at the music
+  volume [inferred], because the sample ships for that purpose and players
+  hear it; the menus of igi.exe as analysed here are silent apart from their
+  click sounds.
 - **Idle attract mode** [recovered `FUN_00416f70` 0x416fb0–0x41705d, flow
   table 0x4028a0, `FUN_00418340`, `FUN_00418210`]: in an own-display menu,
   every update compares the current screen, the mouse state, the selection

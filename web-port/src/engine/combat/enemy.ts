@@ -153,6 +153,17 @@ export interface EnemyManager {
   /** HumanSoldier_<id>.isDead. */
   isDead(soldierTaskId: number): number;
   /** The soldier AI of an Enemy (diagnostics / tests), or null. */
+  /** Debug view of a soldier's body, motor and attach state (automation). */
+  inspect(enemy: Enemy): {
+    clip: { id: number; loop: boolean; time: number } | null;
+    motorState: number;
+    scripted: number;
+    scriptedClip: number;
+    rootZ: number;
+    present: boolean;
+    attached: { body: number; local: number[] } | null;
+    channels: number[] | null;
+  } | null;
   aiOf(enemy: Enemy): HumanAi | null;
   /**
    * Task-tree order (FUN_004e2d60 walk; game.ts drives it from the mission runtime): beginNodeTick,
@@ -160,7 +171,7 @@ export interface EnemyManager {
    * endNodeTick (grenades; soldiers whose node was not reached are out of the world).
    */
   beginNodeTick(dt: number): boolean;
-  tickNode(taskId: number, type: string): void;
+  tickNode(taskId: number, type: string, nodeIndex: number): void;
   /** `fallback`: the walk did not run (no runtime): tick every soldier in list order instead. */
   endNodeTick(fallback?: boolean): void;
   /** Soldiers in the world (alive, present) with their HumanSoldier "Team" and eye position (engine). */
@@ -182,6 +193,8 @@ interface SoldierRuntime {
    * the dynamic body id (node index); null when none, undefined until resolved.
    */
   vehicleBody?: number | null;
+  /** The rider's first attach took its placed position (FUN_00461f50 at the first FUN_00460fd0). */
+  riderPlaced?: boolean;
   enemy: Enemy;
   level: LevelSoldier;
   team: number;
@@ -250,6 +263,11 @@ export function createEnemyManager(ctx: GameContext, options: EnemyManagerOption
     const fn = ctx.systems.tasks?.inWorld;
     return fn ? fn.call(ctx.systems.tasks, taskId) : true;
   };
+  /** A soldier's in-world state by its own node (ids repeat), else by task id. */
+  const soldierInWorld = (e: Enemy): boolean => {
+    const byNode = (ctx.systems.tasks as { inWorldNode?: (node: number) => boolean } | null)?.inWorldNode;
+    return e.node !== undefined && e.node >= 0 && byNode ? byNode.call(ctx.systems.tasks, e.node) : inWorld(e.taskId);
+  };
   const rngFloat = () => (world ? world.rng.float() : Math.random());
   const playerTeam = (): number => {
     const t = ctx.level?.tasks.find((x) => x.type === "HumanPlayer");
@@ -275,7 +293,8 @@ export function createEnemyManager(ctx: GameContext, options: EnemyManagerOption
     },
     crouched: () => ctx.player.crouching,
     // FUN_0045eaa0's in-world flag (+0xcf6): out of the world (the intro's container) the player is not tracked.
-    present: () => inWorld(playerInfo().taskId),
+    // Cheat Invisible To Enemies: the soldiers' perception (FUN_00487920 slots) skips the player.
+    present: () => inWorld(playerInfo().taskId) && ctx.cheats?.invisible !== true,
   };
 
   // --- Hooks for the AI core ----------------------------------------------
@@ -487,6 +506,7 @@ export function createEnemyManager(ctx: GameContext, options: EnemyManagerOption
     const enemy: Enemy = {
       id,
       taskId: soldier.taskId,
+      node: soldier.taskIndex,
       position,
       velocity: [0, 0, 0],
       yaw: soldier.yaw,
@@ -534,7 +554,9 @@ export function createEnemyManager(ctx: GameContext, options: EnemyManagerOption
     };
     Object.assign(rt, {
       enemy, level: soldier, team: soldier.team, body, motor, human, ai: null, weapon: primary, grenade,
-      grounded: Boolean(ground), mv: createHumanMoveState([position[0], position[1] + motor.rootZ / UNITS, position[2]]), held: !ground, present: true, shadow: ctx.systems.effects?.createBlobShadow() ?? null,
+      grounded: Boolean(ground), mv: createHumanMoveState([position[0], position[1] + motor.rootZ / UNITS, position[2]]),
+      // Without ground under the placed point a soldier is held, unless its graph places it (FUN_00460fd0).
+      held: !ground && soldier.graphId === null, present: true, shadow: ctx.systems.effects?.createBlobShadow() ?? null,
       flash: primary && ctx.level ? createMuzzleFlash(ctx.level, primary.scriptId) : null, lastPose: -1,
       roof: false, lastHit: null, deathSlide: null, lastMove: [0, 0, 0],
     } satisfies SoldierRuntime);
@@ -575,7 +597,7 @@ export function createEnemyManager(ctx: GameContext, options: EnemyManagerOption
     });
     let playerAdded = false;
     for (const rt of soldiers) {
-      if (!playerAdded && playerNode >= 0 && (nodeOf.get(rt.enemy.taskId) ?? -1) > playerNode) {
+      if (!playerAdded && playerNode >= 0 && (rt.level.taskIndex ?? nodeOf.get(rt.enemy.taskId) ?? -1) > playerNode) {
         world.addHuman(playerHuman);
         playerAdded = true;
       }
@@ -637,7 +659,7 @@ export function createEnemyManager(ctx: GameContext, options: EnemyManagerOption
       if (t.type === "HumanSoldier" && !node.has(t.id)) node.set(t.id, i);
     });
     return level.soldiers
-      .map((s, i) => ({ s, i, n: node.get(s.taskId) ?? Number.MAX_SAFE_INTEGER }))
+      .map((s, i) => ({ s, i, n: s.taskIndex ?? node.get(s.taskId) ?? Number.MAX_SAFE_INTEGER }))
       .sort((a, b) => a.n - b.n || a.i - b.i)
       .map((x) => x.s);
   }
@@ -865,7 +887,7 @@ export function createEnemyManager(ctx: GameContext, options: EnemyManagerOption
       // View position: the origin + 0.69 m standing / 0.35 m crouched, as the player's (FUN_00464490) [inferred for soldiers].
       const eye: V3 = [origin[0], origin[1], origin[2] + (rt.motor.stance === "stand" ? 2826.24 : 1433.6)];
       yield {
-        order: nodeOfTask(rt.enemy.taskId) * 1000,
+        order: (rt.level.taskIndex ?? nodeOfTask(rt.enemy.taskId)) * 1000,
         active: rt.present,
         origin,
         eye,
@@ -974,6 +996,8 @@ export function createEnemyManager(ctx: GameContext, options: EnemyManagerOption
     if (!enemy.alive) return;
     rt.ai?.post({ type: EV.TAKINGDAMAGE, team: attackerTeam, flags: 0, range: -1, position: toIgi(from), source: attacker, other: attacker });
     if (rt.ai?.invulnerable) return;
+    // Cheat One Shot Kills (engine/cheats.ts): the player's bullet or knife takes all the health.
+    if (attacker === PLAYER_KEY && ctx.cheats?.oneShotKills === true && amount > 0) amount = Math.max(amount, enemy.health);
     enemy.health -= amount;
     ctx.events.emit(GameEvent.EnemyHit, { enemyId: enemy.id, position: [...enemy.position], damage: amount, explosion });
     const lethal = enemy.health <= 0;
@@ -1061,6 +1085,7 @@ export function createEnemyManager(ctx: GameContext, options: EnemyManagerOption
     ctx.events.on(GameEvent.Fire, (payload) => {
       const f = payload as { weaponId?: string; shooter?: unknown; position?: Vec3 } | undefined;
       if (!world || !f || f.shooter !== "player") return;
+      if (ctx.cheats?.invisible === true) return; // cheat: the soldiers do not hear the player
       const w = f.weaponId ? ctx.level?.weapons.get(f.weaponId) : undefined;
       const range = (w?.aiDetection ?? "").includes("SILENCED") ? AI_GUNSHOT_SILENCED_RANGE : AI_GUNSHOT_RANGE;
       const at = f.position ?? ctx.player.position;
@@ -1069,6 +1094,7 @@ export function createEnemyManager(ctx: GameContext, options: EnemyManagerOption
     ctx.events.on(GameEvent.Footstep, (payload) => {
       const f = payload as { actor?: unknown; position?: Vec3; material?: string | null } | undefined;
       if (!world || !f || f.actor !== "player" || ctx.player.crouching) return;
+      if (ctx.cheats?.invisible === true) return; // cheat: the soldiers do not hear the player
       const range = aiData?.footstepRange.get(f.material ?? "Ground") ?? aiData?.footstepRange.get("Ground") ?? UNITS;
       world.broadcast({ type: EV.WALK, team: playerTeam(), flags: 0x46, range, position: toIgi(f.position ?? ctx.player.position), source: PLAYER_KEY, other: PLAYER_KEY });
     }),
@@ -1076,11 +1102,13 @@ export function createEnemyManager(ctx: GameContext, options: EnemyManagerOption
     ctx.events.on(INTERACT_EVENTS.Noise, (payload) => {
       const f = payload as { type?: number; flags?: number; range?: number; position?: Vec3 } | undefined;
       if (!world || !f || f.type === undefined) return;
+      if (ctx.cheats?.invisible === true) return; // cheat: the soldiers do not hear the player
       world.broadcast({ type: f.type, team: playerTeam(), flags: f.flags ?? 0x46, range: f.range ?? 20480, position: toIgi(f.position ?? ctx.player.position), source: PLAYER_KEY, other: PLAYER_KEY });
     }),
     ctx.events.on(GameEvent.Land, (payload) => {
       const f = payload as { actor?: unknown; position?: Vec3; damaged?: boolean } | undefined;
       if (!world || !f || f.actor !== "player") return;
+      if (ctx.cheats?.invisible === true) return; // cheat: the soldiers do not hear the player
       world.broadcast({ type: EV.GROUNDIMPACT, team: playerTeam(), flags: 0x46, range: f.damaged ? 40960 : 20480, position: toIgi(f.position ?? ctx.player.position), source: PLAYER_KEY, other: PLAYER_KEY });
     }),
   ];
@@ -1137,7 +1165,7 @@ export function createEnemyManager(ctx: GameContext, options: EnemyManagerOption
     if (!tickState) return false;
     const { w, cam, camForward, tanX, dt } = tickState;
     const e = rt.enemy;
-    rt.present = inWorld(e.taskId);
+    rt.present = soldierInWorld(e);
     if (!rt.present) {
       rt.body.object.visible = false;
       rt.shadow?.setVisible(false);
@@ -1154,10 +1182,17 @@ export function createEnemyManager(ctx: GameContext, options: EnemyManagerOption
       // FUN_00460fd0's AI branch: the graph is attached, so FUN_00461f50 attaches the soldier to the
       // graph's parent; then FUN_00461930 moves it rigidly in the vehicle's frame (root motion only,
       // no sweep, probe or gravity) and FUN_0045fd00 turns its heading with the vehicle.
+      // FUN_00461f50 takes the human's object position (+0x20) as it is when it attaches: the
+      // placed "Position" itself. That point is the pelvis one (FUN_00460fd0 puts it at ground +
+      // bone 0's height), so the placed position is not raised by the root height here.
       const mv = rt.mv;
       const rootHeight = rt.motor.rootZ / UNITS;
       if (!mv.attach) {
-        mv.position = [e.position[0], e.position[1] + rootHeight, e.position[2]];
+        if (!rt.riderPlaced) {
+          const placed = rt.level.position;
+          mv.position = [placed[0], placed[1], placed[2]];
+          rt.riderPlaced = true;
+        }
         if (!attachHuman(w, mv, rt.vehicleBody)) rt.vehicleBody = undefined;
       }
       if (mv.attach) {
@@ -1182,7 +1217,9 @@ export function createEnemyManager(ctx: GameContext, options: EnemyManagerOption
         e.velocity[2] = mv.moved[2] / dt;
         e.yaw = rt.motor.yaw;
       }
-    } else if (!rt.held) {
+    } else if (!rt.held && rt.vehicleBody !== undefined && !(rt.ai === null && rt.level.graphId !== null)) {
+      // (A rider whose vehicle is not in the world yet, or a soldier whose HumanAI is still
+      // loading, waits: igi.exe attaches / has the AI from the first tick.)
       // FUN_004600f0 for soldiers (FUN_0045bd00), dead ones included: the
       // root motion of the playing clip rotated by the body matrix (heading
       // + the gun's yaw kick; no 1.75 factor: that is the player's
@@ -1212,6 +1249,15 @@ export function createEnemyManager(ctx: GameContext, options: EnemyManagerOption
       if (mv.grounded) mv.air = [0, 0, 0];
       else mv.air[1] -= GRAVITY_M_PER_TICK2;
       moveHuman(w, mv, rootDelta, rootHeight, ctx.playArea ?? undefined);
+      // FUN_00460fd0's AI branch: a soldier with a graph stands at the graph's height (the
+      // current node, or along the route segment) + the pose's root height; always on ground.
+      const graphZ = rt.ai ? rt.ai.graphFeetZ(toIgi([mv.position[0], mv.position[1] - rootHeight, mv.position[2]])) : null;
+      if (graphZ !== null) {
+        const origin = ctx.level?.originIgi ?? [0, 0, 0];
+        mv.position[1] = (graphZ - origin[2]) / UNITS + rootHeight;
+        mv.air = [0, 0, 0];
+        mv.grounded = true;
+      }
       rt.grounded = mv.grounded;
       rt.roof = mv.roof;
       rt.lastMove = [mv.moved[0], mv.moved[1], mv.moved[2]];
@@ -1296,28 +1342,33 @@ export function createEnemyManager(ctx: GameContext, options: EnemyManagerOption
     endTick();
   }
 
-  /** Node-ordered ticks: soldiers by HumanSoldier / HumanAI task id, and the ones the walk reached. */
-  const bySoldierTask = new Map<number, SoldierRuntime>();
-  const byAiTask = new Map<number, SoldierRuntime>();
+  /**
+   * Node-ordered ticks: soldiers by the node index of their HumanSoldier / HumanAI task (task ids
+   * repeat: three level-1 soldiers have id -1), and the ones the walk reached.
+   */
+  const bySoldierNode = new Map<number, SoldierRuntime>();
+  const byAiNode = new Map<number, SoldierRuntime>();
   const reached = new Set<SoldierRuntime>();
   function beginNodeTick(dt: number): boolean {
-    bySoldierTask.clear();
-    byAiTask.clear();
+    bySoldierNode.clear();
+    byAiNode.clear();
     for (const rt of soldiers) {
-      bySoldierTask.set(rt.enemy.taskId, rt);
-      if (rt.level.aiTaskId !== null) byAiTask.set(rt.level.aiTaskId, rt);
+      const node = rt.level.taskIndex ?? nodeOfTask(rt.enemy.taskId);
+      bySoldierNode.set(node, rt);
+      const aiNode = rt.level.aiTaskIndex;
+      if (aiNode !== undefined && aiNode !== null) byAiNode.set(aiNode, rt);
     }
     reached.clear();
     return beginTick(dt);
   }
-  function tickNode(taskId: number, type: string): void {
+  function tickNode(_taskId: number, type: string, nodeIndex: number): void {
     if (type === "HumanSoldier") {
-      const rt = bySoldierTask.get(taskId);
-      if (!rt) return;
+      const rt = bySoldierNode.get(nodeIndex);
+      if (!rt || reached.has(rt)) return;
       reached.add(rt);
       tickSoldier(rt);
     } else if (type === "HumanAI") {
-      const rt = byAiTask.get(taskId);
+      const rt = byAiNode.get(nodeIndex);
       if (rt && reached.has(rt)) tickAi(rt);
     }
   }
@@ -1360,7 +1411,7 @@ export function createEnemyManager(ctx: GameContext, options: EnemyManagerOption
       for (const rt of soldiers) {
         if (!rt.enemy.alive || !rt.present) continue;
         // The player's bullet path near this soldier: GUNSHOTMISS (2 m, team = shooter's).
-        if (rt.ai && world && options?.nearMiss !== false) rt.ai.post(gunshotMiss(closestOnSegment(from, dir, maxDistance, rt.enemy.position), playerTeam(), PLAYER_KEY));
+        if (rt.ai && world && options?.nearMiss !== false && ctx.cheats?.invisible !== true) rt.ai.post(gunshotMiss(closestOnSegment(from, dir, maxDistance, rt.enemy.position), playerTeam(), PLAYER_KEY));
         const hit = rt.body.hitTest(raycaster);
         if (!hit) continue;
         rt.lastHit = { zone: hit.zone, dir: [dir[0], dir[1], dir[2]], tick: ctx.tick };
@@ -1387,6 +1438,20 @@ visibleSoldiers() {
     isDead(soldierTaskId: number): number {
       const rt = soldiers.find((s) => s.enemy.taskId === soldierTaskId);
       return rt && !rt.enemy.alive ? 1 : 0;
+    },
+    inspect(enemy: Enemy) {
+      const rt = byId.get(enemy.id);
+      if (!rt) return null;
+      return {
+        clip: rt.body.animator.clip ? { ...rt.body.animator.clip } : null,
+        motorState: rt.motor.state,
+        scripted: rt.motor.scripted,
+        scriptedClip: rt.motor.scriptedClip,
+        rootZ: rt.motor.rootZ,
+        present: rt.present,
+        attached: rt.mv.attach ? { body: rt.mv.attach.body, local: [...rt.mv.attach.local] } : null,
+        channels: rt.ai ? Array.from(rt.ai.ch) : null,
+      };
     },
     aiOf(enemy: Enemy): HumanAi | null {
       return byId.get(enemy.id)?.ai ?? null;

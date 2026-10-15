@@ -1,12 +1,45 @@
 # re-igi
 
+**Project I.G.I. in a web browser: a hobby project by Haseeb ur Rehman.**
+
 Research toward a desktop-browser reimplementation of Project I.G.I., using the
 supplied installation as the reference. The aim is to preserve the original
 visual style and eventually play one mission in a browser.
 
-**Current status:** Mission 1 ("Trainyard") is playable in the browser,
-decoded at runtime from your own installation. The port follows igi.exe's
-own rules, recovered by static analysis and recorded with their evidence in
+## About this project
+
+re-igi is a personal, non-commercial hobby project by **Haseeb ur Rehman**.
+It studies how the 2000 PC game *Project I.G.I.: I'm Going In* works and
+rebuilds its first mission so that it runs in a web browser. It is made for
+learning and for fun, not for sale.
+
+It is an unofficial fan project. It is not affiliated with, endorsed by or
+supported by Innerloop Studios, Eidos Interactive or any current owner of the
+*Project I.G.I.* rights.
+
+## Legal notice
+
+- *Project I.G.I.* and all of its content (names, characters, levels,
+  artwork, models, textures, sounds, music, video and program code) belong to
+  their copyright and trademark owners.
+- To play, you need **your own legally obtained copy** of the game. The port
+  reads that copy's files at runtime; it does not need to be distributed with
+  any of them.
+- **Copying, uploading, sharing or selling the original game's files, or
+  anything extracted or converted from them, without the rights holders'
+  permission is copyright infringement and is illegal.** Do not put them in a
+  repository, a download or a published build of this project.
+- Do not use this project, or any build of it, for commercial purposes.
+- The source code written for re-igi is © 2026 Haseeb ur Rehman. All rights
+  reserved. Apart from what GitHub's Terms of Service allow (viewing and
+  forking on GitHub), no permission is given to copy, republish, modify or
+  sell it, in whole or in part, without the author's written permission.
+
+## Status
+
+Mission 1 ("Trainyard") is playable in the browser, decoded at runtime from
+your own installation. The port follows igi.exe's own rules, recovered by
+static analysis and recorded with their evidence in
 [docs/evidence-ledger.md](docs/evidence-ledger.md):
 
 - **World**: the octree terrain with the exe's per-frame LOD walk, vertex
@@ -73,19 +106,57 @@ Open the page, go through the original main menu (**Select Mission** →
 **OK**) and **click** to capture the mouse. Esc breaks a cut-scene;
 otherwise it opens the pause menu.
 
-The keys are the game's own defaults, read from `config.qvm`:
+The keys are the game's own defaults, read from `config.qvm` (or from the
+profile as the Controls menu leaves it), plus a few port additions: **W A S D
+move** as well as the arrow keys, **R reloads** as well as Enter, the
+**middle mouse button** is alternate fire (the Dragunov scope, the MP5SD
+zoom) as well as Backspace, and the **mouse wheel zooms** the binoculars and
+the Dragunov scope.
 
 | Input | Action |
 |-------|--------|
-| Arrow keys | move |
+| Arrow keys or `W` `A` `S` `D` | move |
 | Mouse | look (inverted vertical axis by default, as the shipped config sets it; the menu's "Invert Mouse" and `?look=normal` change it) |
-| Left mouse | fire (hold for automatic weapons) · right mouse: next weapon |
-| `Enter` reload · `Right Shift` use (doors, ladders, wires, switches, terminals) · `Right Ctrl` crouch (hold) | |
-| `Numpad 0` jump · `Numpad 1` peek (lean) · `W` walk / run · `C` map computer | |
-| `Space` binoculars · `1`–`9` weapon groups · `Esc` pause | |
+| Left mouse | fire (hold for automatic weapons) · right mouse: next weapon (as in the original) |
+| `Enter` or `R` reload (an empty gun also reloads by itself when you release Fire) · `Right Shift` use (doors, ladders, wires, switches, terminals) · `Right Ctrl` crouch (hold) | |
+| `Numpad 0` jump · `Numpad 1` peek (lean) · `Caps Lock` walk / run (the shipped `W`, moved for WASD) · `C` map computer | |
+| `Space` binoculars · `Page Up` / `Page Down` or the wheel: zoom · `Backspace` or the middle button (alternate fire): Dragunov scope on / off (hold to zoom in), MP5SD zoom on / off, binoculars: hold to zoom in, click again to reset | |
+| `1`–`9` weapon groups · `Esc` pause | |
 
-Add `?keys=wasd` to the URL for a WASD layout (E use, C crouch, Space jump,
-Shift walk / run, M map computer).
+The binoculars behave as in igi.exe (`FUN_0046f500`): each tick of zoom in or
+out multiplies the view tangent by 0.96 or 1.04, from 70° down to 5° and up to 90°.
+
+`?keys=original` uses only the profile's bindings (no WASD, R, middle button
+or wheel).
+
+**Quit** on the main menu ends the game as igi.exe does: the page closes
+itself. Browsers allow that only for a tab opened by a script or one with no
+browsing history; otherwise the page goes black with "Project I.G.I. has
+quit" and you close the tab yourself.
+`?keys=wasd` is a full modern layout (E use, C crouch, Space jump, Shift
+walk / run, M map computer, B binoculars, wheel zoom).
+
+**Cheats** (port addition): Configuration → **Cheats** on the main menu, or
+**Cheats** in the pause menu during a mission. Every cheat is off until you
+switch it on; a change applies when you press OK (Cancel discards it).
+
+| Cheat | Effect |
+|-------|--------|
+| Unlimited Ammo | Firing, throwing grenades and using medipacks use nothing: the clip and the reserve stay as they are. A reload fills the clip without using the reserve. |
+| Unlimited Health | You take no damage: your health stays where it is. Falling out of the world still ends the game. |
+| One Shot Kills | Your bullets and knife kill any soldier with one hit (a soldier the mission keeps alive on purpose still survives). |
+| Invisible To Enemies | Soldiers and security cameras do not see you, and soldiers do not hear your shots, steps, landings, doors or ladders. A soldier you hit still knows he was hit. Mission triggers (reaching an area) work as normal. |
+| All Weapons | At every mission start, and at once when switched on during a mission: every weapon the level can show (Glock, MP5SD, Uzi, AK-47, Minimi, Dragunov, grenades, medipacks) with a full clip and a full reserve. Switching it off keeps what you carry until the next start. |
+
+The original igi.exe has one hidden cheat of its own, the command-line word
+`UnlimitedAmmo` (the clip still empties, but reloads are free). See
+[docs/weapons-view.md](docs/weapons-view.md).
+
+Settings made in the menus (profiles, controls, volumes, resolution,
+performance level, cheats) are kept in this browser's storage, as igi.exe keeps them
+in `config.qsc`; clearing the site data restores the shipped `config.qvm`
+defaults. The menus play `menu_music` from the menu sound archive once the
+page has had a click or key press (browsers block audio before that).
 
 Checks and build:
 

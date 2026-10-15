@@ -29,6 +29,7 @@
  * The non-original #overlay text (showOverlay) is kept only for port-level
  * errors such as missing game files.
  */
+import { CHEAT_MENU_TEXT, injectCheatMenu } from "./cheat-menu";
 import type { IAssetSource } from "../../contracts";
 import { createHttpAssetSource, type UiFont } from "../../loaders";
 import type { GameContext } from "../context";
@@ -285,7 +286,20 @@ export function createHud(ctx: HudContext, options: HudOptions = {}): Hud {
   let m203: number | null = null;
   const computerLog = new ComputerLog();
   const config = new MenuConfig();
-  config.onChange = (what) => callbacks.onSettingsChanged?.(config.snapshot(), what);
+  // igi.exe writes the profiles back to config.qsc; the port keeps them in this browser
+  // (a missing or blocked storage simply starts from config.qvm every time).
+  const CONFIG_STORAGE_KEY = "igi-port.config.v1";
+  const storeConfig = () => {
+    try {
+      localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(config.save()));
+    } catch {
+      /* storage unavailable */
+    }
+  };
+  config.onChange = (what) => {
+    storeConfig();
+    callbacks.onSettingsChanged?.(config.snapshot(), what);
+  };
   /** CONTROL_KEYS names held right now (the ControlsMenu reads key state, not the queue). */
   const heldKeys = new Set<string>();
   const keyByCode = new Map<string, string>();
@@ -519,7 +533,7 @@ export function createHud(ctx: HudContext, options: HudOptions = {}): Hud {
   if (hasDom) window.addEventListener("keydown", onKeyDown);
 
   // --- strings ----------------------------------------------------------------
-  const menuText = (key: string) => assets?.menuStrings.get(key.toLowerCase()) ?? `RM: ${key}`;
+  const menuText = (key: string) => assets?.menuStrings.get(key.toLowerCase()) ?? CHEAT_MENU_TEXT.get(key.toLowerCase()) ?? `RM: ${key}`;
   /** A StatusMessage Text: a messages.res key (the task parameter) or already-resolved text. */
   function resolveMessage(text: string): string {
     const found = assets?.messages.get(text.toLowerCase());
@@ -696,6 +710,9 @@ export function createHud(ctx: HudContext, options: HudOptions = {}): Hud {
 
   // --- loading ------------------------------------------------------------------
   const ready = loadUiAssets(source).then((a) => {
+    // Port addition: the Cheats screen in Configuration and in the pause menu (ui/cheat-menu.ts).
+    if (!injectCheatMenu(a.mainMenu, "main")) console.warn("[ui] main menu: no place for the Cheats entry");
+    if (!injectCheatMenu(a.ingameMenu, "ingame")) console.warn("[ui] in-game menu: no place for the Cheats entry");
     if (disposed) return;
     assets = a;
     const hudFont = a.computer.fonts.get("font3.fnt");
@@ -720,6 +737,12 @@ export function createHud(ctx: HudContext, options: HudOptions = {}): Hud {
       } catch (error) {
         console.warn(`[ui] config.qvm: ${(error as Error).message}`);
       }
+    }
+    try {
+      const stored = localStorage.getItem(CONFIG_STORAGE_KEY);
+      if (stored && !config.restore(JSON.parse(stored))) console.info("[ui] stored settings ignored (invalid)");
+    } catch {
+      /* storage unavailable or unreadable: config.qvm defaults */
     }
     const readme = (await tryRead("language/english/ReadMe.txt")) ?? (await tryRead("language/english/readme.txt"));
     if (readme) readmeText = Array.from(new Uint8Array(readme), (c) => String.fromCharCode(c)).join("");

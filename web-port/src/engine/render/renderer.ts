@@ -12,9 +12,11 @@
  *     and fog colours are used as stored and written to the screen unchanged.
  *   - No anti-aliasing (the original renders without multisampling).
  *
- * Resolution: by default the frame is drawn at the window's resolution (same
- * framing and HUD proportions as 640x480, sharper pixels). `?res=original`
- * renders exactly 640x480 pixels and scales them up.
+ * Resolution: the frame is drawn at the profile's display mode (GOGfxDisp /
+ * the Graphics menu's Resolution, shipped 640x480) and scaled to the window,
+ * as the original's fullscreen mode is scaled by the monitor. `?res=native`
+ * draws at the window's resolution instead (port option); `?res=original`
+ * forces 640x480 with blocky pixels.
  *
  * The world spans 100 km, so a logarithmic depth buffer keeps it free of
  * z-fighting (the original used a 16/24-bit hardware z-buffer with ZBIAS).
@@ -44,6 +46,8 @@ export interface RendererBundle {
    */
   letterbox(fraction: number): void;
   resize(): void;
+  /** The display mode the frame is rendered at (Graphics > Resolution), or null for the window's resolution. */
+  setRenderResolution(size: { width: number; height: number } | null): void;
   dispose(): void;
 }
 
@@ -56,6 +60,9 @@ export function createRenderer(canvas: HTMLCanvasElement): RendererBundle {
   THREE.ColorManagement.enabled = false;
   const params = new URLSearchParams(location.search);
   const originalResolution = params.get("res") === "original";
+  const nativeResolution = params.get("res") === "native";
+  /** The profile's display mode (null = the window's resolution). */
+  let renderSize: { width: number; height: number } | null = nativeResolution ? null : { width: ORIGINAL_WIDTH, height: ORIGINAL_HEIGHT };
   const renderer = new THREE.WebGLRenderer({
     canvas,
     antialias: false,
@@ -87,12 +94,13 @@ export function createRenderer(canvas: HTMLCanvasElement): RendererBundle {
     frame.y = Math.floor((cssHeight - height) / 2);
     frame.width = width;
     frame.height = height;
-    if (originalResolution) {
-      // Exactly 640x480 drawing-buffer pixels for the frame, upscaled by CSS.
-      const scale = ORIGINAL_WIDTH / Math.max(width, 1);
+    if (originalResolution || renderSize) {
+      // The display mode's pixels for the frame, upscaled by CSS (blocky only for ?res=original).
+      const modeWidth = originalResolution ? ORIGINAL_WIDTH : renderSize!.width;
+      const scale = modeWidth / Math.max(width, 1);
       renderer.setPixelRatio(1);
       renderer.setSize(Math.round(cssWidth * scale), Math.round(cssHeight * scale), false);
-      canvas.style.imageRendering = "pixelated";
+      canvas.style.imageRendering = originalResolution ? "pixelated" : "";
     } else {
       renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
       renderer.setSize(cssWidth, cssHeight, false);
@@ -139,6 +147,13 @@ export function createRenderer(canvas: HTMLCanvasElement): RendererBundle {
       renderer.setScissor(bufferFrame.x / ratio, bufferFrame.y / ratio, bufferFrame.width / ratio, bufferFrame.height / ratio);
     },
     resize,
+    setRenderResolution(size) {
+      if (nativeResolution) return;
+      const next = size && size.width > 0 && size.height > 0 ? { width: size.width, height: size.height } : null;
+      if (next?.width === renderSize?.width && next?.height === renderSize?.height) return;
+      renderSize = next;
+      resize();
+    },
     dispose() {
       renderer.dispose();
     },

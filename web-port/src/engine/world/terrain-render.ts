@@ -35,10 +35,10 @@
  * so the whole terrain is a single draw call.
  */
 import * as THREE from "three";
+import { renderDetail } from "./performance";
 import type { DecodedTexture, Vec3 } from "../../contracts";
 import type { LevelTerrainRenderMesh } from "../../loaders";
 import {
-  TERRAIN_LOD_BASE,
   terrainLodScale,
   terrainLodThreshold,
   terrainMorphParams,
@@ -81,7 +81,7 @@ export interface TerrainRenderOptions {
   mipBias: THREE.IUniform<number>;
   /** IGI world position mapped to engine (0, 0, 0). */
   origin: Vec3;
-  /** LOD threshold base (TERRAIN_LOD_BASE = GOGfxPerformance(0)). */
+  /** LOD threshold base (default: world/performance.ts, TERRAIN_LOD_BASE at GOGfxPerformance(0)). */
   lodBase?: number;
   /** Water-plane z floor of the selection (IGI units); level 1 has none. */
   zFloor?: number;
@@ -534,7 +534,8 @@ export function buildTerrain(
       const pm = persp.projectionMatrix.elements;
       const tanX = 1 / pm[0];
       const tanY = 1 / pm[5];
-      const threshold = terrainLodThreshold(tanX, options.lodBase ?? TERRAIN_LOD_BASE);
+      // FUN_00405e50 sets the base at level load from the performance flags (world/performance.ts).
+      const threshold = terrainLodThreshold(tanX, options.lodBase ?? renderDetail.terrainLodBase);
       const morph = terrainMorphParams(threshold);
       const cells = octree.selectCells({ position: igiPos, rotation, tanX, tanY, threshold, zFloor: options.zFloor });
 

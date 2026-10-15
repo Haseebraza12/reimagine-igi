@@ -46,6 +46,7 @@ import { decodeLevelTexture, type IgiLevel, type LevelInstance, type LevelModel 
 import type { DecodedTexture } from "../../contracts";
 import { CollisionWorldBuilder, TRI_BULLET, TRI_SIGHT, TRI_SOLID, type CollisionWorld } from "./collision";
 import { buildLightmapAtlas, type AtlasRect } from "./lightmap-atlas";
+import { renderDetail } from "./performance";
 import { chooseLod, tanHalfFovX, type InstanceLodInput } from "./lod";
 import type { BlockFlags, LodVariant, ModelLodLibrary } from "./model-lods";
 import { boundingSphereOf } from "./model-lods";
@@ -287,7 +288,6 @@ export function buildWorld(level: IgiLevel, extra?: (builder: CollisionWorldBuil
   const fog = options.fog ?? NO_FOG;
   const mipBias = options.mipBias ?? { value: 0 };
   const lods = options.lods ?? null;
-  const detail = options.detail ?? 1;
   const m4 = new THREE.Matrix4();
   const n3 = new THREE.Matrix3();
   const v = new THREE.Vector3();
@@ -615,6 +615,8 @@ export function buildWorld(level: IgiLevel, extra?: (builder: CollisionWorldBuil
     // The first-person zoom changes the FOV and therefore the LOD (igi.exe uses the current tanX).
     const tanX = persp.isPerspectiveCamera ? tanHalfFovX(persp.fov, persp.aspect) : 1;
     const settings = lods?.settings ?? null;
+    // FUN_004c4d00 reads the performance scale (0x545ffc) on every call.
+    const detail = options.detail ?? renderDetail.modelLodScale;
     for (const inst of lodInstances) {
       const depth = d.subVectors(inst.centre, camPos).dot(forward);
       const lod = inst.hidden || inst.removed ? -1 : chooseLod(inst.input, depth, tanX, settings, detail);

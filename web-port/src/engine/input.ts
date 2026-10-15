@@ -50,6 +50,9 @@ const KEY_CODES: Record<string, string> = {
   MOUSE_BUTTON_1: "Mouse0",
   MOUSE_BUTTON_2: "Mouse2",
   MOUSE_BUTTON_3: "Mouse1",
+  // The key table's wheel bits 0x100 / 0x200 (docs/hud.md 11.2).
+  MOUSE_WHEEL_UP: "WheelUp",
+  MOUSE_WHEEL_DOWN: "WheelDown",
 };
 
 /** Browser code for an IGI KEY_* / MOUSE_BUTTON_* name (null if unknown). */
@@ -81,9 +84,56 @@ const WASD: Record<string, string[]> = {
   MoveUp: ["KeyW"], MoveDown: ["KeyS"], MoveLeft: ["KeyA"], MoveRight: ["KeyD"], Fire: ["Mouse0"], Reload: ["KeyR"],
   Activate: ["KeyE"], Crouch: ["KeyC"], Jump: ["Space"], NextWeapon: ["Mouse2", "KeyQ"], PrevWeapon: ["KeyZ"],
   AlternateFire: ["KeyF"], Peek: ["KeyX"], Binoculars: ["KeyB"], MapComputer: ["KeyM"], ToggleWalkRun: ["ShiftLeft"],
-  ZoomIn: ["PageUp"], ZoomOut: ["PageDown"],
+  ZoomIn: ["PageUp", "WheelUp"], ZoomOut: ["PageDown", "WheelDown"],
   ...Object.fromEntries([1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => [`WeaponCategory${n}`, [`Digit${n}`]])),
 };
+
+/** The added WASD movement keys (port addition, see Input.setBindings). */
+const WASD_MOVE: ReadonlyArray<readonly [string, string]> = [
+  ["MoveUp", "KeyW"],
+  ["MoveDown", "KeyS"],
+  ["MoveLeft", "KeyA"],
+  ["MoveRight", "KeyD"],
+];
+
+/** Further port additions, each only while the profile leaves the input unbound: R reloads, the middle button scopes. */
+const EXTRA_KEYS: ReadonlyArray<readonly [string, string]> = [
+  ["Reload", "KeyR"],
+  ["AlternateFire", "Mouse1"],
+];
+
+/** Ticks a wheel notch holds its key (port addition: one tick per notch would be a 4 % zoom step). */
+const WHEEL_TICKS_PER_NOTCH = 6;
+/** At most this many ticks are queued, so turning the wheel back answers at once. */
+const WHEEL_TICKS_MAX = 2 * WHEEL_TICKS_PER_NOTCH;
+/** One notch of a mouse wheel in WheelEvent pixels (Chrome / Firefox report 100 / 3 lines). */
+const WHEEL_NOTCH_PX = 100;
+
+function addWasd(map: Map<string, string[]>): void {
+  // The mouse wheel zooms (binoculars, Dragunov scope) unless the profile binds it to something else.
+  const wheelBound = [...map.values()].some((codes) => codes.includes("WheelUp") || codes.includes("WheelDown"));
+  if (!wheelBound) {
+    map.set("ZoomIn", [...(map.get("ZoomIn") ?? []), "WheelUp"]);
+    map.set("ZoomOut", [...(map.get("ZoomOut") ?? []), "WheelDown"]);
+  }
+  const owner = (code: string): string | null => {
+    for (const [action, codes] of map) if (codes.includes(code)) return action;
+    return null;
+  };
+  for (const [action, code] of WASD_MOVE) {
+    const other = owner(code);
+    if (other === action) continue;
+    if (other === "ToggleWalkRun" && code === "KeyW" && owner("CapsLock") === null) {
+      map.set(other, (map.get(other) ?? []).filter((c) => c !== code).concat("CapsLock"));
+    } else if (other !== null) {
+      continue;
+    }
+    map.set(action, [...(map.get(action) ?? []), code]);
+  }
+  for (const [action, code] of EXTRA_KEYS) {
+    if (owner(code) === null) map.set(action, [...(map.get(action) ?? []), code]);
+  }
+}
 
 export class Input {
   private readonly down = new Set<string>();
@@ -96,6 +146,10 @@ export class Input {
   private readonly canvas: HTMLElement;
   private readonly listeners: Array<() => void> = [];
   private readonly modern = new URLSearchParams(location.search).get("keys") === "wasd";
+  /** Remaining hold ticks of the wheel's virtual keys. */
+  private readonly wheelTicks: Record<string, number> = {};
+  /** ?keys=original: only the profile's bindings (no added WASD movement). */
+  private readonly originalOnly = new URLSearchParams(location.search).get("keys") === "original";
 
   /**
    * Port option (?look=normal): un-invert the vertical look. igi.exe's look is
@@ -118,7 +172,7 @@ export class Input {
       const boundModifier = e.code === "ControlRight" || e.code === "ControlLeft" || e.code === "ShiftRight" || e.code === "ShiftLeft";
       if ((e.metaKey || e.altKey || e.ctrlKey) && !boundModifier && !this.locked) return;
       press(e.code);
-      if (this.locked || e.code === "Space" || e.code.startsWith("Arrow") || e.code === "Backspace" || e.code === "Tab") {
+      if (this.locked || e.code === "Space" || e.code.startsWith("Arrow") || e.code === "Backspace" || e.code === "Tab" || e.code === "PageUp" || e.code === "PageDown") {
         e.preventDefault();
       }
     };
@@ -130,7 +184,10 @@ export class Input {
     };
     const onMouseDown = (e: MouseEvent) => {
       // The click that captures the pointer must not also act.
-      if (this.locked) press(`Mouse${e.button}`);
+      if (!this.locked) return;
+      // The middle button would start the browser's autoscroll.
+      if (e.button === 1) e.preventDefault();
+      press(`Mouse${e.button}`);
     };
     const onMouseUp = (e: MouseEvent) => release(`Mouse${e.button}`);
     const onContextMenu = (e: MouseEvent) => {
@@ -139,6 +196,23 @@ export class Input {
     const onPointerLockChange = () => {
       this.locked = document.pointerLockElement === this.canvas;
       if (!this.locked) this.down.clear();
+    };
+    const onWheel = (e: WheelEvent) => {
+      if (!this.locked) return;
+      e.preventDefault();
+      if (e.deltaY === 0) return;
+      const px = e.deltaMode === 1 ? e.deltaY * (WHEEL_NOTCH_PX / 3) : e.deltaMode === 2 ? e.deltaY * 8 * WHEEL_NOTCH_PX : e.deltaY;
+      const key = px < 0 ? "WheelUp" : "WheelDown";
+      const other = px < 0 ? "WheelDown" : "WheelUp";
+      // Turning the wheel the other way ends the opposite zoom at once.
+      if ((this.wheelTicks[other] ?? 0) > 0) {
+        this.wheelTicks[other] = 0;
+        this.down.delete(other);
+      }
+      // Smooth-scrolling wheels and touchpads send many small deltas: they count in proportion.
+      const ticks = (Math.abs(px) / WHEEL_NOTCH_PX) * WHEEL_TICKS_PER_NOTCH;
+      this.wheelTicks[key] = Math.min(WHEEL_TICKS_MAX, Math.max(1, (this.wheelTicks[key] ?? 0) + ticks));
+      press(key);
     };
     const onBlur = () => this.down.clear();
 
@@ -150,6 +224,7 @@ export class Input {
     window.addEventListener("contextmenu", onContextMenu);
     document.addEventListener("pointerlockchange", onPointerLockChange);
     window.addEventListener("blur", onBlur);
+    window.addEventListener("wheel", onWheel, { passive: false });
     this.listeners.push(
       () => window.removeEventListener("keydown", onKeyDown),
       () => window.removeEventListener("keyup", onKeyUp),
@@ -159,10 +234,17 @@ export class Input {
       () => window.removeEventListener("contextmenu", onContextMenu),
       () => document.removeEventListener("pointerlockchange", onPointerLockChange),
       () => window.removeEventListener("blur", onBlur),
+      () => window.removeEventListener("wheel", onWheel),
     );
   }
 
-  /** Use the player's config.qvm bindings (unknown keys are skipped). */
+  /**
+   * Use the player's config.qvm bindings (unknown keys are skipped). Port additions (not original),
+   * unless ?keys=original: W / A / S / D move as well as the configured keys (a WASD key the
+   * profile binds to something else keeps that binding, except the shipped W = ToggleWalkRun,
+   * which moves to Caps Lock so that W can walk forward); the wheel zooms; R reloads and the
+   * middle mouse button is AlternateFire (scope) while the profile leaves them unbound.
+   */
   setBindings(list: readonly ControlBinding[]): void {
     const map = new Map<string, string[]>();
     if (this.modern) {
@@ -173,6 +255,7 @@ export class Input {
         if (!code) continue;
         map.set(b.action, [...(map.get(b.action) ?? []), code]);
       }
+      if (!this.originalOnly) addWasd(map);
     }
     this.bindings = map;
   }
@@ -276,6 +359,16 @@ export class Input {
   /** Clear latched presses; call after a game tick has read them. */
   endFrame(): void {
     this.pressed.clear();
+    // A wheel notch holds its key for WHEEL_TICKS_PER_NOTCH ticks.
+    for (const key of ["WheelUp", "WheelDown"]) {
+      const left = this.wheelTicks[key] ?? 0;
+      if (left <= 0) continue;
+      this.wheelTicks[key] = left - 1;
+      if (left - 1 <= 0) {
+        this.wheelTicks[key] = 0;
+        this.down.delete(key);
+      }
+    }
   }
 
   dispose(): void {

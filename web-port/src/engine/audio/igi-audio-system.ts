@@ -16,7 +16,9 @@ import type { GameRng } from "./sound-events";
 import type { IAssetSource, Vec3 } from "../../contracts";
 import type { AudioManager } from "./audio";
 import { AmbienceRuntime } from "./ambience";
-import { createAudioData, loadIgiAudio, type IgiAudioData, type LoadIgiAudioOptions } from "./igi-audio";
+import { createAudioData, loadIgiAudio, loadMenuSamples, type IgiAudioData, type LoadIgiAudioOptions, type SampleRegistry } from "./igi-audio";
+import { computeVoice } from "../../loaders";
+import type { BackendVoice } from "./mixer";
 import {
   SoundMixer,
   type AudioListener,
@@ -52,11 +54,21 @@ export interface AudioSystemStats extends MixerStats {
   gunLoops: number;
   ambientAreas: number;
   conditionalSounds: number;
+  /** The menu music voice is playing. */
+  menuMusic: boolean;
 }
 
 export interface IgiAudioSystem extends AudioManager {
   /** Fetch and decode the mission's audio (common, mission, menu) with progress. */
   load(raw: IAssetSource, onProgress?: (fraction: number, text: string) => void, options?: Omit<LoadIgiAudioOptions, "onProgress">): Promise<IgiAudioData>;
+  /** Decode the menu archive only (boot, before any mission): menu sounds and menu_music. */
+  loadMenu(raw: IAssetSource): Promise<void>;
+  /**
+   * Menu music [inferred, docs/audio.md "Menu music"]: menu_music (menusystem/SOUND/sounds.res)
+   * looped 2D while `on`, at the GOSoundMusic volume. igi.exe has no call that names it; the
+   * port plays it on the menu screens.
+   */
+  setMenuMusic(on: boolean, volume?: number): void;
   /** Use already-loaded data (tests, harness, reuse across restarts). */
   setData(data: IgiAudioData): void;
   readonly data: IgiAudioData | null;
@@ -132,6 +144,11 @@ export function createIgiAudio(host: AudioHostContext, options: IgiAudioOptions 
   let masterGain = 1;
   let paused = false;
   let disposed = false;
+  // Menu archive decoded at boot (loadMenu); kept across mission loads.
+  let menuSamples: SampleRegistry | null = null;
+  let menuMusicOn = false;
+  let menuMusicVolume = 1;
+  let menuMusicVoice: BackendVoice | null = null;
 
   const attachBackend = () => {
     if (!context || backend) return;
@@ -157,12 +174,44 @@ export function createIgiAudio(host: AudioHostContext, options: IgiAudioOptions 
 
   const actorParent = (actor: Actor): SoundParent => events.actorParent(actor);
 
+  /** Start / stop / re-level the menu music voice (outside the mixer: no FX scale, no voice limit). */
+  const syncMenuMusic = () => {
+    const sample = (menuSamples ?? data?.menuSamples)?.get("menu_music") ?? null;
+    const state = sample
+      ? computeVoice({ volume: menuMusicVolume, pitch: 1, sampleRate: sample.sampleRate, positional: false, fxVolume: 1 })
+      : null;
+    const want = menuMusicOn && sample !== null && state !== null && state.volume > 0 && !disposed;
+    if (!want || !backend || !backend.ready) {
+      if (menuMusicVoice && backend) backend.stop(menuMusicVoice);
+      menuMusicVoice = null;
+      return;
+    }
+    if (!menuMusicVoice) menuMusicVoice = backend.start(sample!, true, 0, state!);
+    else backend.update(menuMusicVoice, state!);
+  };
+
   const system: IgiAudioSystem = {
     async load(raw, onProgress, loadOptions = {}) {
-      const loaded = await loadIgiAudio(raw, { ...loadOptions, onProgress });
+      const keepMenu = menuSamples !== null && loadOptions.menu !== true;
+      const loaded = await loadIgiAudio(raw, { ...loadOptions, onProgress, menu: keepMenu ? false : loadOptions.menu });
+      if (keepMenu) loaded.menuSamples = menuSamples!;
       for (const w of loaded.warnings) console.info(`[audio] ${w}`);
       system.setData(loaded);
       return loaded;
+    },
+
+    async loadMenu(raw) {
+      const loaded = await loadMenuSamples(raw);
+      for (const w of loaded.warnings) console.info(`[audio] ${w}`);
+      menuSamples = loaded.samples;
+      if (data && data.menuSamples.size === 0) data.menuSamples = loaded.samples;
+      syncMenuMusic();
+    },
+
+    setMenuMusic(on, volume) {
+      menuMusicOn = on;
+      if (volume !== undefined && Number.isFinite(volume)) menuMusicVolume = Math.min(1, Math.max(0, volume));
+      syncMenuMusic();
     },
 
     setData(next) {
@@ -203,8 +252,8 @@ export function createIgiAudio(host: AudioHostContext, options: IgiAudioOptions 
     },
 
     playMenu(name) {
-      if (!data) return false;
-      return mixer.playRaw(name, 1, data.menuSamples) || mixer.playRaw(name, 1);
+      const menu = menuSamples ?? data?.menuSamples ?? null;
+      return (menu !== null && mixer.playRaw(name, 1, menu)) || (data !== null && mixer.playRaw(name, 1));
     },
 
     playAt(name, position, opts = {}) {
@@ -309,12 +358,14 @@ export function createIgiAudio(host: AudioHostContext, options: IgiAudioOptions 
         gunLoops: events.activeGunLoops,
         ambientAreas: ambience?.areas.length ?? 0,
         conditionalSounds: ambience?.sounds.length ?? 0,
+        menuMusic: menuMusicVoice !== null,
       };
     },
 
     dispose() {
       if (disposed) return;
       disposed = true;
+      syncMenuMusic();
       unbind();
       mixer.stopAll();
       mixer.setBackend(null);
@@ -334,6 +385,7 @@ export function createIgiAudio(host: AudioHostContext, options: IgiAudioOptions 
       attachBackend();
       const ac = context as AudioContext;
       if (!paused && ac.state !== "running" && typeof ac.resume === "function") void ac.resume().catch(() => {});
+      syncMenuMusic();
     },
 
     /** Legacy cue API: plays the DefineSound `name` 2D; nothing is synthesized. */

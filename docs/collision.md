@@ -205,6 +205,30 @@ Recovered.
 - **So** footsteps use the visible surface's material (Wood, Concrete,
   Gravel, …), never HumanCollision.
 
+- **Soldiers with a graph do not probe** [recovered 0x46125a–0x46146f].
+  The rays above are the branch for a human without a HumanAI (`human+0x800`
+  = 0: the player). A HumanAI is set once at creation (`FUN_0045f8e0`, its
+  only caller `FUN_0044deb0`) and never cleared, so for every soldier with
+  a graph (HumanAI `+0x3b64`) the feet height comes from the graph, dead or
+  alive, with no gravity and the on-ground flag always set:
+  - no queued waypoint (`FUN_004a5e10` counts the path list `+0xe0`): the
+    current node's world height (`FUN_004f02f0` / `FUN_004f0340`: node +
+    graph position, through the parent's matrix for an attached graph),
+    or the feet height unchanged when the node is not valid;
+  - walking: when the first waypoint is more than 100 units (0x531990)
+    from the stored next one (`+0x820`), previous (`+0x808`) = next and next
+    = that waypoint (both start at the feet the first time);
+    r = |next − feet| / |next − previous| (3-D, `FUN_004a9410` /
+    `FUN_004a9590`) clamped to [0, 1]; z = (1 − r)(next.z − previous.z) +
+    previous.z; exactly at next, next.z.
+  - The object position is that height + bone 0's z in object space
+    (`FUN_00488760`): the pose's root height. A seated soldier
+    (level 1: Anya at her desk, clip 4 of skeleton 6) therefore sits at the
+    node's floor height whatever furniture is under the placed point.
+  Port: `HumanAi.graphFeetZ` (engine/ai/human-ai.ts), applied after the
+  sweep in combat/enemy.ts. In level 1 every soldier's graph height is
+  within 5 mm of the collision ground.
+
 Humans are filtered out of the sweep, so characters do not collide with one
 another through it (section 6).
 
@@ -564,7 +588,10 @@ human's position and orientation in the object's frame, `+0x770` and
   non-null, and attaches to the AIGraph's parent object (graph `+0x14`)
   while the soldier's graph (HumanAI `+0x3b64`) has its attached flag
   (`+100`), detaching when the flag is 0. The player standing on a train
-  is never attached;
+  is never attached. The stored offset comes from the human's `+0x20` as it
+  is before that tick's move, which for a rider on its first tick is its
+  placed "Position" (the pelvis-level point, E151), so a rider keeps exactly
+  the height it was placed at inside its vehicle;
 - while set, `FUN_00410a30` calls `FUN_00461930` instead of
   `FUN_004600f0`: local `+0x770` += R_objᵀ × the root motion (`+0x520`,
   float sums), position = obj + R_obj local — no sweep, ground probe,

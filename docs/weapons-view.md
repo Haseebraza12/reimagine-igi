@@ -336,6 +336,27 @@ loadout]:
   × 1.04 up to 90°.
 - Scoped, the view kick is × 0.05 (f32 0x5315c0).
 
+**UnlimitedAmmo (igi.exe's hidden cheat)** [recovered]: the word
+`UnlimitedAmmo` on the command line (FUN_0040ff30 registers it with
+FUN_0048d710, which matches command-line words case-insensitively; handler
+LAB_00410450 sets DAT_0056a384 = 1). Its readers:
+
+- S1 / S2 reload decision (0x40ee6d): reload when (Reload held or the clip
+  empty) and (rounds in the pool **or the flag**) and the clip is not full;
+- the reload itself (FUN_00477fe0 with the flag byte): clip = clip size, the
+  pool is not touched;
+- the fire tick (0x40f2bd) copies the flag into the use record (+0x21); the
+  thrown-item use method (0x4780f4) passes it to FUN_004e8fd0, and the
+  grenade ends (0x40f840, 0x40faf4) keep the grenade instead of switching
+  away when the pool is empty;
+- the M16A2's alternate fire (0x40edc5) enters the M203 state without M203
+  rounds.
+
+The clip still empties as rounds are fired. The soldiers' reloads always
+pass 1 (0x452fac …), which is why they never run dry. The port's Cheats
+screen (engine/cheats.ts) offers a stricter Unlimited Ammo (firing uses no
+rounds) whose reloads follow these rules.
+
 ## 7. Camera and view effects (`FUN_00463840`, view object = arms)
 
 **FOV** [recovered]: world tangent arms+0x1e4 (reset f32 fptan(π/4) = 1),

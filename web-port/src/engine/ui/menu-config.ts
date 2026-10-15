@@ -29,6 +29,7 @@
  *   ControlsMenu_ConvertOffsetFromFloat 4228b0 = fistp(17 v + 0.5).
  */
 import { isQvmSymbol, readQvmCallTree, x87Fistp } from "../../loaders";
+import { CHEAT_KEYS, noCheats, readCheats, type CheatState } from "../cheats";
 
 /** The 27 actions of the controls table at 0x5345b8 (row order of the ControlsMenu). */
 export const CONTROL_ACTIONS: readonly string[] = [
@@ -85,6 +86,8 @@ export interface MenuProfile {
   bloodEnabled: boolean;
   fxVolume: number;
   musicVolume: number;
+  /** GOSoundMusic's first argument: music on. */
+  music: boolean;
   gamma: number;
   performanceFlags: number;
   resolution: { w: number; h: number; bpp: number };
@@ -107,10 +110,16 @@ export interface MenuSettingsSnapshot {
   musicVolume: number;
   gamma: number;
   performanceFlags: number;
+  /** GOGfxDisp: the display mode (Graphics > Resolution). */
+  resolution: { w: number; h: number; bpp: number };
+  /** GOSoundMusic: music on (Config_SoundOptionsGetMusic). */
+  music: boolean;
+  /** Port cheats (Configuration → Cheats); not per profile. */
+  cheats: CheatState;
   bindings: Array<{ action: string; device: "INPUTPORT_DEVICE_KEYBOARD" | "INPUTPORT_DEVICE_MOUSE"; key: string }>;
 }
 
-export type SettingsChange = "volume" | "controls" | "graphics" | "profile" | "content";
+export type SettingsChange = "volume" | "controls" | "graphics" | "profile" | "content" | "cheats";
 
 /** The screen modes the port offers in "Resolution" (the exe lists the display adapter's modes; inferred list). */
 export const PORT_RESOLUTIONS: ReadonlyArray<readonly [number, number, number]> = [
@@ -127,6 +136,7 @@ function newProfile(): MenuProfile {
     bloodEnabled: true,
     fxVolume: 1,
     musicVolume: 1,
+    music: true,
     gamma: 1,
     performanceFlags: 0,
     resolution: { w: 640, h: 480, bpp: 32 },
@@ -149,6 +159,8 @@ export class MenuConfig {
   profiles: MenuProfile[] = [newProfile()];
   active = 0;
   contentPassword = "";
+  /** Port cheats (Config_CheatGet / Config_CheatSet); all off by default. */
+  cheats: CheatState = noCheats();
   /** Called after a change that matters to the game (wire to input / audio / storage). */
   onChange: ((what: SettingsChange, config: MenuConfig) => void) | null = null;
 
@@ -218,6 +230,7 @@ export class MenuConfig {
           cur().fxVolume = n(a[1], 1);
           break;
         case "GOSoundMusic":
+          cur().music = n(a[0], 1) !== 0;
           cur().musicVolume = n(a[1], 1);
           break;
         default:
@@ -242,6 +255,9 @@ export class MenuConfig {
       musicVolume: p.musicVolume,
       gamma: p.gamma,
       performanceFlags: p.performanceFlags,
+      resolution: { ...p.resolution },
+      music: p.music !== false,
+      cheats: { ...this.cheats },
       bindings: CONTROL_ACTIONS.map((action) => {
         const key = p.bindings[action] ?? DEFAULT_BINDINGS[action];
         return { action, device: key.startsWith("MOUSE") ? "INPUTPORT_DEVICE_MOUSE" : "INPUTPORT_DEVICE_KEYBOARD", key };
@@ -251,6 +267,54 @@ export class MenuConfig {
 
   private changed(what: SettingsChange): void {
     this.onChange?.(what, this);
+  }
+
+  /**
+   * The profiles as plain data. igi.exe writes them back to config.qsc; the
+   * port keeps them in the browser (hud.ts) and restores them with restore().
+   */
+  save(): { version: 1; active: number; contentPassword: string; cheats: CheatState; profiles: MenuProfile[] } {
+    return { version: 1, active: this.active, contentPassword: this.contentPassword, cheats: { ...this.cheats }, profiles: this.profiles.map(cloneProfile) };
+  }
+
+  /** Restore save() data over the config.qvm defaults; false (nothing changed) when it is not valid. */
+  restore(data: unknown): boolean {
+    const d = data as { version?: unknown; active?: unknown; contentPassword?: unknown; cheats?: unknown; profiles?: unknown } | null;
+    if (!d || d.version !== 1 || !Array.isArray(d.profiles) || d.profiles.length === 0 || d.profiles.length > 16) return false;
+    const num = (v: unknown, def: number) => (typeof v === "number" && Number.isFinite(v) ? v : def);
+    const profiles: MenuProfile[] = [];
+    for (const raw of d.profiles as Array<Record<string, unknown>>) {
+      if (!raw || typeof raw !== "object" || typeof raw.name !== "string" || !raw.name) return false;
+      const base = newProfile();
+      const res = (raw.resolution ?? {}) as Record<string, unknown>;
+      const bindings: Record<string, string> = { ...base.bindings };
+      if (raw.bindings && typeof raw.bindings === "object") {
+        for (const [action, key] of Object.entries(raw.bindings as Record<string, unknown>)) {
+          if (CONTROL_ACTIONS.includes(action) && typeof key === "string" && CONTROL_KEYS.includes(key)) bindings[action] = key;
+        }
+      }
+      profiles.push({
+        name: raw.name.slice(0, 31),
+        difficulty: num(raw.difficulty, base.difficulty),
+        activeMission: num(raw.activeMission, base.activeMission),
+        invertField: num(raw.invertField, base.invertField),
+        mouseSensitivity: num(raw.mouseSensitivity, base.mouseSensitivity),
+        bloodEnabled: typeof raw.bloodEnabled === "boolean" ? raw.bloodEnabled : base.bloodEnabled,
+        fxVolume: num(raw.fxVolume, base.fxVolume),
+        musicVolume: num(raw.musicVolume, base.musicVolume),
+        music: typeof raw.music === "boolean" ? raw.music : base.music,
+        gamma: num(raw.gamma, base.gamma),
+        performanceFlags: num(raw.performanceFlags, base.performanceFlags),
+        resolution: { w: num(res.w, base.resolution.w), h: num(res.h, base.resolution.h), bpp: num(res.bpp, base.resolution.bpp) },
+        device: num(raw.device, base.device),
+        bindings,
+      });
+    }
+    this.profiles = profiles;
+    this.active = Math.min(Math.max(0, Math.trunc(num(d.active, 0))), profiles.length - 1);
+    this.contentPassword = typeof d.contentPassword === "string" ? d.contentPassword : "";
+    this.cheats = readCheats(d.cheats);
+    return true;
   }
 
   /** Key table index of an action's binding (-1 when unbound). */
@@ -298,6 +362,11 @@ export class MenuConfig {
         return p.musicVolume;
       case "Config_SoundOptionsSetMusicVolume":
         p.musicVolume = Math.fround(args.float(0));
+        return 0;
+      case "Config_SoundOptionsGetMusic":
+        return p.music !== false ? 1 : 0;
+      case "Config_SoundOptionsSetMusic":
+        p.music = (x87Fistp(args.float(0)) & 0xff) !== 0;
         return 0;
       case "Game_UpdateVolume":
         this.changed("volume");
@@ -405,6 +474,21 @@ export class MenuConfig {
       }
       case "Config_IsGermany":
         return 0;
+      // Port: the Cheats screen (ui/cheat-menu.ts). Index = CHEAT_KEYS order.
+      case "Config_CheatGet": {
+        const key = CHEAT_KEYS[args.int(0)];
+        return key && this.cheats[key] ? 1 : 0;
+      }
+      case "Config_CheatSet": {
+        const key = CHEAT_KEYS[args.int(0)];
+        if (!key) return 0;
+        const on = (x87Fistp(args.float(1)) & 0xff) !== 0;
+        if (this.cheats[key] !== on) {
+          this.cheats = { ...this.cheats, [key]: on };
+          this.changed("cheats");
+        }
+        return 0;
+      }
       case "Config_IsContentControlPasswordEnabled":
         return this.contentPassword.length > 0 ? 1 : 0;
       case "Config_VerifyContentControlPassword":

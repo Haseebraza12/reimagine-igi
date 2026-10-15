@@ -97,9 +97,12 @@ Gaps (documented in code and in the documents above):
   decision (see README);
 - the credits text is compiled into igi.exe and is shown only if igi.exe is
   staged (not done; a decision for the owner);
-- the Graphics menu's performance options (applied by `FUN_00405e50` at
-  level load: terrain threshold, an LOD scale, four other toggles) are stored
-  but not applied; the port renders the shipped GOGfxPerformance(0);
+- of the Graphics menu's performance flags (applied at every level load,
+  `FUN_00405e50`, engine/world/performance.ts) the terrain threshold and the
+  model LOD scale are applied; bits 1 / 2 (a device callback) and 4 / 8 (two
+  capability switches) are not, because what they change was not identified;
+- the menu music is played by the port, not by any code found in igi.exe
+  ([audio.md](audio.md) "Menu music");
 
 ## 6. Optimise with measurements — partial
 

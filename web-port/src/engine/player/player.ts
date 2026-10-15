@@ -670,7 +670,8 @@ export function createPlayerController(ctx: GameContext, options: PlayerControll
     const p = ctx.player;
     if (!p.alive) return;
     lastZone = zone;
-    if (amount > 0) {
+    // Cheat Unlimited Health (engine/cheats.ts): the hit still pushes, the health stays.
+    if (amount > 0 && ctx.cheats?.unlimitedHealth !== true) {
       p.health = Math.max(0, p.health - amount);
       if (p.health <= 0) {
         p.alive = false;

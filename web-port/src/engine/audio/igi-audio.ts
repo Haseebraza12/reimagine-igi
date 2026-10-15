@@ -674,3 +674,49 @@ export async function loadIgiAudio(raw: IAssetSource, options: LoadIgiAudioOptio
   progress(1, "Sounds ready");
   return data;
 }
+
+/**
+ * Decode only the menu archive (menusystem/SOUND/sounds.res, loaded by the
+ * menu manager FUN_00416c40 before any mission): the click / selection /
+ * typing sounds and menu_music. Same registry rules as loadIgiAudio's menu set.
+ */
+export async function loadMenuSamples(raw: IAssetSource, options: Pick<LoadIgiAudioOptions, "paths" | "decoder" | "audioBuffers"> = {}): Promise<{ samples: SampleRegistry; warnings: string[] }> {
+  const paths = options.paths ?? LEVEL1_AUDIO_PATHS;
+  const warnings: string[] = [];
+  const samples = new SampleRegistry();
+  const res = await readOptional(raw, paths.menuSounds, warnings);
+  if (!res) return { samples, warnings };
+  const jobs: DecodeJob[] = [];
+  const seen = new Set<string>();
+  for (const m of readIlffMembers(res)) {
+    if (!m.name.toLowerCase().endsWith(".wav")) continue;
+    const key = ilsfSampleKey(m.name);
+    try {
+      readIlsfHeader(m.payload);
+    } catch (error) {
+      warnings.push(`audio: ${m.name}: ${(error as Error).message}`);
+      continue;
+    }
+    if (seen.has(key)) {
+      samples.rejected.push(m.name);
+      continue;
+    }
+    seen.add(key);
+    jobs.push({ key, path: m.name, origin: "menu", buffer: m.payload });
+  }
+  let decoder: SampleDecoder | null = null;
+  if (options.decoder !== "inline") decoder = await createWorkerDecoder();
+  decoder ??= createInlineDecoder();
+  try {
+    const decoded = await Promise.all(jobs.map((job) => decoder!.decode(job.buffer)));
+    const toBuffers = options.audioBuffers ?? typeof AudioBuffer !== "undefined";
+    for (let i = 0; i < jobs.length; i++) {
+      const sample = sampleFromDecoded(jobs[i].key, jobs[i].path, "menu", decoded[i]);
+      if (toBuffers) attachAudioBuffer(sample);
+      samples.add(sample);
+    }
+  } finally {
+    decoder.dispose();
+  }
+  return { samples, warnings };
+}

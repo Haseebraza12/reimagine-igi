@@ -12,6 +12,7 @@
 import type * as THREE from "three";
 import type { PlayerTuning, Vec3 } from "../contracts";
 import type { IgiLevel, LevelArea, LevelWeapon } from "../loaders";
+import type { CheatState } from "./cheats";
 import type { Clock } from "./clock";
 import type { EventBus } from "./events";
 import type { Input } from "./input";
@@ -65,6 +66,8 @@ export type EnemyState = "idle" | "patrol" | "alert" | "engage" | "search" | "de
 export interface Enemy {
   id: number;
   taskId: number;
+  /** Pre-order node index of the HumanSoldier task (task ids repeat; -1 for several). */
+  node?: number;
   position: Vec3;
   velocity: Vec3;
   yaw: number;
@@ -127,6 +130,8 @@ export interface GameSubsystems {
 }
 
 export interface GameContext {
+  /** Port cheats (engine/cheats.ts); absent or all false = the game as shipped. */
+  cheats?: CheatState;
   renderer: THREE.WebGLRenderer;
   scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;

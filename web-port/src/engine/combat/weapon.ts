@@ -171,6 +171,11 @@ export interface WeaponSystem extends PickupInventory {
   setGunMatrixSource(source: (() => THREE.Matrix4 | null) | null): void;
   /** Reload request (as if Reload were held this tick). */
   reload(): void;
+  /**
+   * Cheat All Weapons: carry `id` (a full clip when it is new) and fill its pool to the level's
+   * ammo limit (DefineHumanPlayerAmmoLimit), or to five clips for a pool the level leaves unlimited.
+   */
+  giveFull(id: string): void;
   /** Next (+1) or previous (-1) weapon of DefineHumanPlayerWeaponCycle (applied in the next update). */
   cycle(direction?: number): void;
   /** WeaponCategory key 1-9: the next carried weapon of that category (applied in the next update). */
@@ -550,8 +555,14 @@ export function createWeaponSystem(ctx: GameContext): WeaponSystem {
   }
 
   /** (Reload held or clip empty) and ammo in the pool and room in the clip (FUN_0040ead0 / FUN_0040f070). */
+  /** 0x40ee6d: (Reload held or the clip empty) and (rounds in the pool or igi.exe's UnlimitedAmmo flag) and the clip not full. */
   function wantsReload(it: Item, reloadHeld: boolean): boolean {
-    return (reloadHeld || it.clip === 0) && reserveOf(it) !== 0 && it.clip < it.spec.roundsPerClip;
+    return (reloadHeld || it.clip === 0) && (reserveOf(it) !== 0 || (unlimitedAmmo() && it.pool !== null)) && it.clip < it.spec.roundsPerClip;
+  }
+
+  /** Port cheat Unlimited Ammo (ctx.cheats); its reloads follow igi.exe's DAT_0056a384 rules. */
+  function unlimitedAmmo(): boolean {
+    return ctx.cheats?.unlimitedAmmo === true;
   }
 
   function stateTick(cur: Inputs, binocularPressed: boolean): void {
@@ -675,8 +686,11 @@ export function createWeaponSystem(ctx: GameContext): WeaponSystem {
           it.reloadPhase = 1;
           ctx.events.emit(GameEvent.ReloadStart, { weaponId: it.spec.scriptId });
         } else if (animEnded) {
-          // FUN_00477fe0: min(clip - loaded, pool) rounds move from the pool.
-          if (it.pool !== null) {
+          // FUN_00477fe0: min(clip - loaded, pool) rounds move from the pool; with the
+          // UnlimitedAmmo flag (the cheat) the clip is filled and the pool is not touched.
+          if (it.pool !== null && unlimitedAmmo()) {
+            it.clip = Math.max(it.clip, it.spec.roundsPerClip);
+          } else if (it.pool !== null) {
             const take = Math.min(it.spec.roundsPerClip - it.clip, reserves[it.pool] ?? 0);
             if (take > 0) {
               it.clip += take;
@@ -776,7 +790,7 @@ export function createWeaponSystem(ctx: GameContext): WeaponSystem {
         if (it && it.spec.firstPersonAnims.stand >= 0) fp.arms.play(it.spec.firstPersonAnims.stand, false, 0);
         fp.sway.snap(FPC.swayLowered.alpha, FPC.swayLowered.gamma);
         fp.sway.setTarget(0, 0, FPC.swayRate.alpha, FPC.swayRate.gamma);
-        if (!it || reserveOf(it) === 0) {
+        if (!it || (reserveOf(it) === 0 && !(unlimitedAmmo() && it.clip > 0))) {
           // The last grenade: FUN_0040f890(human, 1) requests the next weapon of the cycle; S4's lower tick
           // (FUN_0040f380) swaps it in once the arms are up.
           latchedNext = true;
@@ -784,7 +798,8 @@ export function createWeaponSystem(ctx: GameContext): WeaponSystem {
           state = WEAPON_STATE.switchLower;
         } else {
           // FUN_004e8fd0 -> FUN_00477fe0: the clip refills from the pool at once; S1 once the arms are up.
-          const take = Math.min(it.spec.roundsPerClip - it.clip, reserveOf(it));
+          // With the UnlimitedAmmo flag (0x40f840) the grenade stays and the pool is not touched.
+          const take = unlimitedAmmo() ? 0 : Math.min(it.spec.roundsPerClip - it.clip, reserveOf(it));
           if (take > 0 && it.pool !== null) {
             it.clip += take;
             reserves[it.pool] = (reserves[it.pool] ?? 0) - take;
@@ -818,7 +833,7 @@ export function createWeaponSystem(ctx: GameContext): WeaponSystem {
         if (pool === undefined) return; // no AMMO_ID_MEDIPACK record (FUN_0047b5a0 = 0)
         const p = ctx.player;
         if (pool !== 0 && p.health !== p.maxHealth) {
-          reserves[MEDIPACK_POOL] = pool - 1;
+          if (!unlimitedAmmo()) reserves[MEDIPACK_POOL] = pool - 1;
           // damage (+0x254) -= max (+0x258) x factor (+0x6e4), stored as float, clamped to [0, max].
           const max = p.maxHealth;
           const factor = hand?.extras.medipackFactor ?? 0;
@@ -993,7 +1008,8 @@ export function createWeaponSystem(ctx: GameContext): WeaponSystem {
     // 0x477b80: the player's gun ejects its casing after the pellets (RNG draws before the kick).
     const gunMatrix = gunMatrixSource?.();
     if (gunMatrix && it.spec.gunModel) ctx.systems.effects?.ejectCasing(it.spec.scriptId, it.spec.gunModel, gunMatrix);
-    if (it.pool !== null && it.clip > 0) it.clip--;
+    // Cheat Unlimited Ammo (engine/cheats.ts): the round is not used.
+    if (it.pool !== null && it.clip > 0 && !unlimitedAmmo()) it.clip--;
     it.shots++;
     it.cooldown = fireCooldownTicks(it.spec.roundsPerMinute);
     // FUN_00477ea0: the AI hears the shot through the Fire event (combat/enemy.ts); then the kick.
@@ -1309,6 +1325,19 @@ export function createWeaponSystem(ctx: GameContext): WeaponSystem {
     },
     reload() {
       latchedReload = true;
+    },
+    giveFull(id: string) {
+      const spec = ctx.level?.weapons.get(id);
+      if (!spec) return;
+      if (!itemOf(id)) items.push(newItem(spec, Math.max(0, spec.roundsPerClip)));
+      const it = itemOf(id);
+      if (it?.pool) {
+        const limit = ctx.level?.humanPlayer?.ammoLimits[it.pool];
+        const target = limit !== undefined && limit !== -1 ? limit : 5 * Math.max(1, spec.roundsPerClip);
+        const have = reserves[it.pool] ?? 0;
+        if (have < target) addToPool(it.pool, target - have);
+      }
+      publish();
     },
     cycle(direction = 1) {
       if (direction >= 0) latchedNext = true;

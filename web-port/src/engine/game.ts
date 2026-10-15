@@ -18,6 +18,7 @@
  *   ?shot=spawn                  render the player's spawn view
  *   ?test                        load straight into the level and expose
  *                                window.__igiTest (simulates without pointer lock)
+ *   ?menutest                    normal boot to the main menu, exposing window.__igiMenu
  */
 import * as THREE from "three";
 import { DEFAULT_PLAYER_TUNING, type Vec3 } from "../contracts";
@@ -34,6 +35,8 @@ import { computeEye, createCameraController } from "./player/camera";
 import { createWeaponSystem } from "./combat/weapon";
 import { createEnemyManager } from "./combat/enemy";
 import { createIgiAudio, listenerFromMatrix } from "./audio/audio";
+import { applyPerformanceFlags } from "./world/performance";
+import { allWeaponIds, noCheats, type CheatState } from "./cheats";
 import { createHud } from "./ui/hud";
 import { createEffects } from "./fx/effects";
 import { createPickupRenderer } from "./render/pickups";
@@ -69,6 +72,12 @@ declare global {
       fire(down: boolean): void;
       /** The audio system (mixer, sound events) for inspection. */
       audio: ReturnType<typeof createIgiAudio>;
+    };
+    /** ?menutest automation hook (the normal menu boot). */
+    __igiMenu?: {
+      audio: ReturnType<typeof createIgiAudio>;
+      settings(): ReturnType<ReturnType<typeof createHud>["settings"]["snapshot"]>;
+      ctx: GameContext;
     };
   }
 }
@@ -140,6 +149,8 @@ export function createGame(canvas: HTMLCanvasElement): Game {
     // The application tick (FUN_00402a30): perception phases test it; it counts while paused too.
     appTick: 0,
     rng: new LevelRng(),
+    // Port cheats (Configuration -> Cheats); the menu settings replace them once loaded.
+    cheats: noCheats(),
     frame: display.frame,
     running: false,
     phase: "loading",
@@ -264,7 +275,8 @@ export function createGame(canvas: HTMLCanvasElement): Game {
       onResume: () => setRunning(true),
       onRestart: () => void restartMission(),
       onQuit: () => quitToMenu(),
-      onExit: () => hud.showMainMenu(),
+      // Main menu -> Quit -> Yes (MENUMANAGER_QUIT): igi.exe ends; the port closes the page.
+      onExit: () => exitGame(),
       onPause: () => setRunning(false),
       requestLock: () => {
         audio.resume();
@@ -274,12 +286,20 @@ export function createGame(canvas: HTMLCanvasElement): Game {
       // Map computer clicks and zoom (FUN_004dddc0, 2-D at volume 1).
       onGameSound: (name) => void audio.play2D(name),
       onSettingsChanged: (settings, what) => {
-        // FX volume = the DirectSound master scale; the music volume only drives the CD mixer line (no effect).
-        if (what === "volume") audio.mixer.fxVolume = settings.fxVolume;
+        // FX volume = the DirectSound master scale; the music volume levels the menu music
+        // (igi.exe: the CD mixer line, docs/audio.md "Menu music").
+        if (what === "volume" || what === "profile") {
+          audio.mixer.fxVolume = settings.fxVolume;
+          updateMenuMusic();
+        }
         // Controls OK: the remapped GOInRemap bindings. GOInMouInv / GOInMouSens have no reader in the
         // look code (engine/look.ts); the map computer pointer reads the invert field itself.
         // Content Control: the profile's blood flag (+0x8), read at every hit (FUN_00462710).
         if (what === "content" || what === "profile") effects.setBlood(settings.bloodEnabled);
+        // Graphics > Resolution: the display mode the frame is rendered at.
+        if (what === "graphics" || what === "profile") display.setRenderResolution({ width: settings.resolution.w, height: settings.resolution.h });
+        // Configuration -> Cheats (engine/cheats.ts): read by the weapon, player, soldier and camera code.
+        applyCheats(settings.cheats);
         if (what === "controls") {
           input.setBindings(settings.bindings);
           applyInvert(settings.invertField);
@@ -313,6 +333,17 @@ export function createGame(canvas: HTMLCanvasElement): Game {
     hud,
     effects,
   });
+
+  /** Menu music on the front-end menus only (not while loading or in a mission). */
+  let frontEnd = false;
+  function updateMenuMusic(): void {
+    const s = hud.settings.snapshot();
+    audio.setMenuMusic(frontEnd && !missionActive && s.music, s.musicVolume);
+  }
+  function setFrontEnd(on: boolean): void {
+    frontEnd = on;
+    updateMenuMusic();
+  }
 
   /** Simulation on/off (the world runs while playing and not paused by a menu). */
   function setRunning(running: boolean): void {
@@ -406,6 +437,22 @@ export function createGame(canvas: HTMLCanvasElement): Game {
     // Every object intact, glass thresholds redrawn; the bridge writes into the fresh runtime.
     damage.reset();
     damage.setMissionBridge(mission.runtime ? missionRuntimeBridge(mission.runtime) : null);
+    // Cheat All Weapons: armed at every (re)start.
+    if (ctx.cheats?.allWeapons) giveAllWeapons();
+  }
+
+  /** Cheat All Weapons: every weapon the level can draw, with a full clip and a full reserve. */
+  function giveAllWeapons(): void {
+    const level = ctx.level;
+    if (!level) return;
+    for (const id of allWeaponIds(level.weapons.values(), (m) => level.models.has(m))) weaponSystem.giveFull(id);
+  }
+
+  /** New cheat settings from the menus; All Weapons switched on during a mission arms the player at once. */
+  function applyCheats(next: CheatState): void {
+    const before = ctx.cheats ?? noCheats();
+    ctx.cheats = { ...next };
+    if (next.allWeapons && !before.allWeapons && missionActive && ctx.level) giveAllWeapons();
   }
 
   /** Load the level once (original files) with loading-screen progress. */
@@ -433,10 +480,13 @@ export function createGame(canvas: HTMLCanvasElement): Game {
     // The selected profile's bindings (the menus start from config.qvm and may have remapped them).
     await hud.ready.catch(() => undefined);
     const menuSettings = hud.settings.snapshot();
+    ctx.cheats = { ...menuSettings.cheats };
     input.setBindings(menuSettings.bindings.length > 0 ? menuSettings.bindings : ctx.level!.controls.bindings);
     applyInvert(menuSettings.invertField);
     mouseSensitivity = menuSettings.mouseSensitivity;
     effects.setBlood(menuSettings.bloodEnabled);
+    // The profile's Sound FX volume (the DirectSound master scale, FUN_00494210).
+    audio.mixer.fxVolume = menuSettings.fxVolume;
     weaponSystem.reloadSeconds = (id) => loaded?.viewModels.reloadSeconds(id) || (ctx.level?.weapons.get(id)?.reloadSeconds ?? 0);
   }
 
@@ -451,6 +501,7 @@ export function createGame(canvas: HTMLCanvasElement): Game {
   /** Select Mission -> OK: loading screen, load, then the mission (intro first). */
   async function startMission(): Promise<void> {
     let step = 0;
+    setFrontEnd(false);
     hud.showLoading(0, LOAD_STEPS);
     try {
       await ensureLoaded(() => hud.showLoading(Math.min(LOAD_STEPS - 1, ++step), LOAD_STEPS));
@@ -459,6 +510,8 @@ export function createGame(canvas: HTMLCanvasElement): Game {
       return;
     }
     hud.showLoading(LOAD_STEPS, LOAD_STEPS);
+    // FUN_00405e50 at level load: the profile's performance flags (terrain / model LOD detail).
+    applyPerformanceFlags(hud.settings.snapshot().performanceFlags);
     resetMission();
     hud.startMission();
     missionActive = true;
@@ -471,6 +524,7 @@ export function createGame(canvas: HTMLCanvasElement): Game {
       hud.showLoading(i, RESTART_STEPS);
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
+    applyPerformanceFlags(hud.settings.snapshot().performanceFlags);
     resetMission();
     hud.startMission();
     missionActive = true;
@@ -482,6 +536,10 @@ export function createGame(canvas: HTMLCanvasElement): Game {
     missionActive = false;
     setRunning(false);
     input.exitLock();
+    // The mission's sounds end with it; the menus keep the output running.
+    audio.reset();
+    audio.setPaused(false);
+    setFrontEnd(true);
   }
 
   // Canvas click while playing without the pointer (e.g. after Esc broke the
@@ -551,9 +609,17 @@ export function createGame(canvas: HTMLCanvasElement): Game {
         return;
       }
       await hud.ready;
+      // The profile's display mode (GOGfxDisp, Graphics > Resolution) sizes the frame.
+      const startSettings = hud.settings.snapshot();
+      display.setRenderResolution({ width: startSettings.resolution.w, height: startSettings.resolution.h });
+      ctx.cheats = { ...startSettings.cheats };
+      // The menu archive (FUN_00416c40 loads it with the menus): clicks and the menu music.
+      await audio.loadMenu(raw).catch((error) => console.info("[audio] menu sounds:", error));
       hud.showOverlay(null);
       hud.showMainMenu();
       ctx.phase = "ready";
+      setFrontEnd(true);
+      if (params.has("menutest")) window.__igiMenu = { audio, settings: () => hud.settings.snapshot(), ctx };
     } catch (error) {
       fail(error);
     }
@@ -701,12 +767,12 @@ export function createGame(canvas: HTMLCanvasElement): Game {
         enemyManager.beginNodeTick(TICK_SECONDS);
         let playerTicked = false;
         let walked = false;
-        mission.setNodeTick((type, taskId) => {
+        mission.setNodeTick((type, taskId, nodeIndex) => {
           walked = true;
           if (type === "HumanPlayer") {
             playerTicked = true;
             playerStep();
-          } else if (type === "HumanSoldier" || type === "HumanAI") enemyManager.tickNode(taskId, type);
+          } else if (type === "HumanSoldier" || type === "HumanAI") enemyManager.tickNode(taskId, type, nodeIndex);
         });
         mission.tick();
         mission.setNodeTick(null);
@@ -791,8 +857,28 @@ export function createGame(canvas: HTMLCanvasElement): Game {
   }
   raf = requestAnimationFrame(frame);
 
-  return {
+  /**
+   * igi.exe's Quit ends the program. The port stops the engine and closes the tab; a browser lets a
+   * page close itself only when the page opened it or the tab has no history, so otherwise the page
+   * is replaced by a black "closed" screen (the game is no longer running either way).
+   */
+  function exitGame(): void {
+    input.exitLock();
+    if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
+    api.stop();
+    try {
+      window.close();
+    } catch {
+      /* not closable */
+    }
+    window.setTimeout(() => {
+      if (!window.closed) showClosedScreen();
+    }, 150);
+  }
+
+  const api: Game = {
     stop() {
+      if (stopped) return;
       stopped = true;
       cancelAnimationFrame(raf);
       for (const off of bindings) off();
@@ -816,4 +902,18 @@ export function createGame(canvas: HTMLCanvasElement): Game {
       dispose();
     },
   };
+  return api;
+}
+
+/** The page after Quit when the browser does not let it close itself. */
+function showClosedScreen(): void {
+  document.title = "Project I.G.I. — closed";
+  for (const el of Array.from(document.body.children)) (el as HTMLElement).style.display = "none";
+  const screen = document.createElement("div");
+  screen.id = "closed";
+  screen.style.cssText =
+    "position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#000;color:#9a9a9a;" +
+    "font:16px/1.8 'Courier New',monospace;letter-spacing:1px;text-align:center;white-space:pre-line;padding:24px;box-sizing:border-box;";
+  screen.textContent = "Project I.G.I. has quit.\nYou can close this tab now.\n\n(Reload the page to play again.)";
+  document.body.appendChild(screen);
 }

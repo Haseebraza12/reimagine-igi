@@ -125,6 +125,8 @@ export interface MissionSystem extends TaskRuntimeApi {
   readonly cutscene: CutsceneView | null;
   /** The HumanPlayer task is in the world (false during the intro / outro). */
   readonly playerInWorld: boolean;
+  /** No enclosing ConditionalContainer of task node `node` has its subtree out of the world. */
+  inWorldNode(node: number): boolean;
   /** MenuManager_SetEnabled state (the in-game menu is disabled during cut-scenes). */
   readonly menuEnabled: boolean;
   readonly complete: boolean;
@@ -141,7 +143,7 @@ export interface MissionSystem extends TaskRuntimeApi {
    * children are walked afterwards (a HumanAI under its HumanSoldier). Before the HumanPlayer tick
    * the dynamic tasks updated so far are applied to the world (doors, vehicles move first).
    */
-  setNodeTick(tick: ((type: string, taskId: number) => void) | null): void;
+  setNodeTick(tick: ((type: string, taskId: number, nodeIndex: number) => void) | null): void;
   /** Player "use" on a door task by id (FUN_00446c10): toggles it unless locked. Doors with id -1: useDoorNode. */
   useDoor(taskId: number): boolean;
   /**
@@ -195,7 +197,13 @@ export function createMissionSystem(ctx: GameContext): MissionSystem {
   let cutscene: CutsceneView | null = null;
   /** A cut-scene submitted its camera during the current tick (the camera with priority 1000 is per frame). */
   /** game.ts's per-node human tick (setNodeTick). */
-  let nodeTick: ((type: string, taskId: number) => void) | null = null;
+  let nodeTick: ((type: string, taskId: number, nodeIndex: number) => void) | null = null;
+  /**
+   * A vehicle moved since its collision body was last placed. igi.exe moves a vehicle's object
+   * in its own node update, so a rider (FUN_00461930) or any later node reads this tick's pose;
+   * the world bodies follow before the next human node.
+   */
+  let vehiclesMoved = false;
   let cameraThisTick = false;
   /** Filter overlays; FUN_00499900 runs once per session. */
   const filters = new CutsceneFilters();
@@ -383,7 +391,8 @@ export function createMissionSystem(ctx: GameContext): MissionSystem {
     if (playerNode >= 0) {
       out.push({
         o: {
-          key: "player", kind: "human", node: playerNode, team: runtime.tasks.player?.team ?? 0, alive: p.alive, inWorld: inWorld(0),
+          // Cheat Invisible To Enemies (engine/cheats.ts): the security cameras do not see the player.
+          key: "player", kind: "human", node: playerNode, team: runtime.tasks.player?.team ?? 0, alive: p.alive, inWorld: inWorld(0) && ctx.cheats?.invisible !== true,
           point: toIgi([p.position[0], p.position[1] + p.eyeHeight, p.position[2]]),
         },
         order: -1,
@@ -393,7 +402,7 @@ export function createMissionSystem(ctx: GameContext): MissionSystem {
     let lastNode = -1;
     ctx.enemies.forEach((e, i) => {
       // Soldiers spawn in node order (enemy.ts); the id -1 ones keep their place after the previous one.
-      const node = Math.max(lastNode, e.taskId >= 0 ? (soldierNodes.get(e.taskId) ?? lastNode) : lastNode);
+      const node = e.node ?? Math.max(lastNode, e.taskId >= 0 ? (soldierNodes.get(e.taskId) ?? lastNode) : lastNode);
       lastNode = node;
       const ai = enemies?.aiOf?.(e) ?? null;
       let point: Vec3;
@@ -404,7 +413,7 @@ export function createMissionSystem(ctx: GameContext): MissionSystem {
         point = toIgi([e.position[0], e.position[1] + SOLDIER_ORIGIN_M + EYE_ABOVE_ORIGIN.standing, e.position[2]]);
       }
       out.push({
-        o: { key: `soldier:${e.id}`, kind: "human", node, team: ai?.team ?? teamOf.get(e.taskId) ?? 1, alive: e.alive, inWorld: inWorld(e.taskId), point },
+        o: { key: `soldier:${e.id}`, kind: "human", node, team: ai?.team ?? teamOf.get(e.taskId) ?? 1, alive: e.alive, inWorld: enemyInWorld(e), point },
         order: i,
       });
     });
@@ -514,6 +523,11 @@ export function createMissionSystem(ctx: GameContext): MissionSystem {
     return [o[0] + p[0] * UNITS_PER_METRE, o[1] - p[2] * UNITS_PER_METRE, o[2] + p[1] * UNITS_PER_METRE];
   };
 
+  /** A soldier by its own node when known (task ids repeat), else by task id. */
+  function enemyInWorld(e: { taskId: number; node?: number }): boolean {
+    return e.node !== undefined && e.node >= 0 ? inWorldNode(e.node) : inWorld(e.taskId);
+  }
+
   function inWorld(taskId: number): boolean {
     const node = runtime?.tasks.byId.get(taskId);
     return node === undefined ? true : inWorldNode(node);
@@ -556,7 +570,7 @@ export function createMissionSystem(ctx: GameContext): MissionSystem {
     const p = ctx.player;
     if (inWorld(0)) out.push({ position: humanOrigin(p.position, p.crouching, p.eyeHeight), team: 0 });
     for (const e of ctx.enemies) {
-      if (!inWorld(e.taskId)) continue;
+      if (!enemyInWorld(e)) continue;
       // Soldier origin: the pelvis, about 0.95 m above the feet standing.
       out.push({ position: toIgi([e.position[0], e.position[1] + 0.95, e.position[2]]), team: teamOf.get(e.taskId) ?? 1 });
     }
@@ -706,8 +720,15 @@ export function createMissionSystem(ctx: GameContext): MissionSystem {
         value,
         updateTask(node) {
           if (!nodeTick) return false;
-          if (node.type === "HumanPlayer") syncWorld();
-          nodeTick(node.type, node.task.id);
+          if (node.type === "Train" || node.type === "Heli" || node.type === "Car") vehiclesMoved = true;
+          if (node.type === "HumanPlayer") {
+            syncWorld();
+            vehiclesMoved = false;
+          } else if ((node.type === "HumanSoldier" || node.type === "HumanAI") && vehiclesMoved && world) {
+            vehicles?.sync(world);
+            vehiclesMoved = false;
+          }
+          nodeTick(node.type, node.task.id, node.index);
           return false;
         },
         escapePressed: () => breakRequested,
@@ -743,7 +764,10 @@ export function createMissionSystem(ctx: GameContext): MissionSystem {
             ctx.events.emit(GameEvent.CutsceneEnd, { id: cut.id });
           }
         },
-        onAnimInput: (anim, nTick, channels) => vehicles?.animInput(anim, nTick, channels),
+        onAnimInput: (anim, nTick, channels) => {
+          vehicles?.animInput(anim, nTick, channels);
+          vehiclesMoved = true;
+        },
         cameraSighting,
         warn: (message) => console.info(`[mission] ${message}`),
       });
@@ -840,6 +864,7 @@ export function createMissionSystem(ctx: GameContext): MissionSystem {
       return runtime.evaluate(text);
     },
     inWorld,
+    inWorldNode,
     perceptionPhase(taskId) {
       const node = runtime?.tasks.byId.get(taskId);
       return node === undefined ? undefined : loadPhases.get(node);

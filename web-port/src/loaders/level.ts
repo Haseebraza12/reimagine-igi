@@ -365,6 +365,13 @@ export interface LevelSoldier {
   aiTaskId: number | null;
   /** HumanAI 'Graph ID', or null. */
   graphId: number | null;
+  /**
+   * Pre-order index of the HumanSoldier task in IgiLevel.tasks (= the mission runtime's node
+   * index). Task ids are not unique: three level-1 soldiers have id -1.
+   */
+  taskIndex?: number;
+  /** Pre-order index of its HumanAI task, or null. */
+  aiTaskIndex?: number | null;
 }
 
 export interface LevelEnvironment {
@@ -1112,6 +1119,7 @@ export async function loadIgiLevel(raw: IAssetSource, paths: IgiLevelPaths = LEV
 
   // --- Soldiers -------------------------------------------------------------
   const soldiers: LevelSoldier[] = [];
+  const taskIndexOf = new Map<IgiTask, number>(tasks.map((t, i) => [t, i]));
   for (const task of ofType("HumanSoldier")) {
     const position = vec3Param(task, "Position");
     if (!position) continue;
@@ -1138,6 +1146,8 @@ export async function loadIgiLevel(raw: IAssetSource, paths: IgiLevelPaths = LEV
       standAnimation: numberParam(task, "Stand Animation") ?? -1,
       aiTaskId: ai ? ai.id : null,
       graphId: ai ? numberParam(ai, "Graph ID") : null,
+      taskIndex: taskIndexOf.get(task) ?? -1,
+      aiTaskIndex: ai ? (taskIndexOf.get(ai) ?? null) : null,
     });
     if (aiType && difficulty && !combatByType.has(aiType)) warnings.push(`no ${difficulty} combat settings for ${aiType}`);
   }

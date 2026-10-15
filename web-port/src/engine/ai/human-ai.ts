@@ -183,6 +183,9 @@ export class HumanAi {
 
   /** Current graph node (H+0x3e24), -1 = none. */
   currentNode = -1;
+  /** FUN_00460fd0's route height segment: the previous (+0x808) and next (+0x820) waypoint, IGI units; null = still zero. */
+  private heightFrom: V3 | null = null;
+  private heightTo: V3 | null = null;
   route: Array<{ point: [number, number, number]; node: number; door: boolean }> = [];
   reservation: { node: number; cx: number; cy: number } | null = null;
 
@@ -808,6 +811,45 @@ export class HumanAi {
     if (!g) return -1;
     const c = aiGraphClosestNode(g.graph, g.position, p);
     return c ? c.node.id : -1;
+  }
+
+  /**
+   * FUN_00460fd0's AI branch (0x46125a-0x46146f) [recovered]: a soldier with a graph takes its
+   * feet height from the graph, never from collision (no ground probe, no gravity; the HumanAI
+   * pointer human+0x800 is set once at creation and never cleared, so dead soldiers too).
+   * - No queued waypoint: the current node's world height (FUN_004f02f0 / FUN_004f0340), or the
+   *   feet height unchanged when the node is not valid.
+   * - Walking: when the first waypoint is more than 100 units (0x531990) from the stored next
+   *   one, previous = next and next = that waypoint (both start at the feet the first time);
+   *   r = |next - feet| / |next - previous| (3-D) clamped to [0, 1], z = (1 - r)(next.z -
+   *   previous.z) + previous.z; exactly at next: next.z.
+   * `feet` is the moved feet position (IGI units); returns the feet z or null without a graph.
+   */
+  graphFeetZ(feet: RV3): number | null {
+    const g = this.graphInfo;
+    if (!g) return null;
+    const z = Math.fround(feet[2]);
+    if (this.route.length < 1) {
+      const n = g.graph.nodeById.get(this.currentNode);
+      return n ? aiGraphNodeWorld(n, g.position)[2] : z;
+    }
+    if (!this.heightTo) {
+      this.heightFrom = [feet[0], feet[1], z];
+      this.heightTo = [feet[0], feet[1], z];
+    }
+    const head = this.route[0].point;
+    const to = this.heightTo;
+    if (Math.hypot(head[0] - to[0], head[1] - to[1], head[2] - to[2]) > 100) {
+      this.heightFrom = to;
+      this.heightTo = [head[0], head[1], head[2]];
+    }
+    const next = this.heightTo!;
+    const prev = this.heightFrom!;
+    const d = [next[0] - feet[0], next[1] - feet[1], next[2] - z];
+    if (d[0] === 0 && d[1] === 0 && d[2] === 0) return next[2];
+    const ratio = Math.hypot(d[0], d[1], d[2]) / Math.hypot(next[0] - prev[0], next[1] - prev[1], next[2] - prev[2]);
+    const r = 0 <= ratio ? (ratio <= 1 ? ratio : 1) : 0;
+    return (1 - r) * (next[2] - prev[2]) + prev[2];
   }
 
   /** Queue the route from the current node to `node` (FUN_004506b0 via the stored route table). */

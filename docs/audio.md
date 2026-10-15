@@ -483,8 +483,21 @@ already staged.
 - **Unused samples.** `m01_ing_01..05` have no reference in this build. No
   StatusMessage, definition or exe path plays them. Mapping them to
   M1_MSG_* texts would be a guess.
-- **Menu music.** No code or menu script names `menu_music`, and CD audio is
-  opened but never played (no MCI_PLAY). How the shipped menu music plays,
-  if it does, is unresolved.
+- **Menu music.** No code or menu script names `menu_music` [recovered]:
+  every by-name call (`FUN_004ddd40`, 18 sites) passes `menu_high`,
+  `menu_k01` / `menu_k0%d`, `menu_sel`, `menu_sel2`, `menu_cancel` or a
+  widget's click sound; the archive loader (`FUN_00416c40` →
+  `FUN_004dd3b0` → `FUN_00494250`) only copies each sample into a
+  DirectSound buffer (`FUN_00494780` is Lock / copy / Unlock); the CD device
+  is opened (`FUN_00493580`), stopped (`FUN_00494220`) and closed
+  (`FUN_00493d70`) but never played (`mciSendCommandA` has three call sites,
+  none MCI_PLAY); the GOSoundMusic volume drives only the mixer's CD-audio
+  line (`FUN_00493920` picks component types 0x1005 / 0x1009 or "CD Audio").
+  So this igi.exe build plays no menu music itself. The port loops
+  `menu_music` (44.1 kHz stereo, format 1) 2D on the front-end menus at the
+  profile's music volume, and stops it while a mission loads or runs
+  [inferred: the sample ships in the menu archive and players report it
+  playing; the trigger is not in this exe]. The archive is decoded at boot
+  so the click sounds also work before the first mission.
 - **The +0x33d walker flag.** It makes footsteps quieter (×0.66) and
   silent to the AI. It is assumed to be the walk (not run) state.
