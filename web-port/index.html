@@ -3,7 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>IGI Web — Vertical Slice</title>
+    <link rel="icon" href="data:," />
+    <title>Project I.G.I. — Trainyard (web port)</title>
     <style>
       html,
       body {
@@ -22,47 +23,45 @@
       }
       #hud {
         position: fixed;
-        left: 0;
-        right: 0;
-        bottom: 0;
-        top: 0;
+        inset: 0;
         pointer-events: none;
-        font-family: "Courier New", monospace;
-        color: #d8f0d8;
-        text-shadow: 0 0 4px #000;
       }
-      #crosshair {
-        position: absolute;
-        left: 50%;
-        top: 50%;
-        transform: translate(-50%, -50%);
-        font-size: 22px;
-        opacity: 0.85;
+      /*
+       * The original interface (HUD, radio messages, loading screen, menus) is
+       * drawn by src/engine/ui into this 640x480 canvas, which is placed over
+       * the 4:3 game frame (ctx.frame) and scaled with nearest-neighbour
+       * sampling. Its pointer events are enabled only while a menu is open.
+       */
+      #igi-ui {
+        position: fixed;
+        left: 0;
+        top: 0;
+        width: 640px;
+        height: 480px;
+        image-rendering: pixelated;
+        image-rendering: crisp-edges;
+        pointer-events: none;
+        touch-action: none;
       }
-      #status {
-        position: absolute;
-        left: 16px;
-        bottom: 12px;
-        font-size: 14px;
-        line-height: 1.5;
-      }
-      #objective {
-        position: absolute;
-        right: 16px;
-        top: 12px;
-        font-size: 13px;
-        text-align: right;
-        opacity: 0.9;
-      }
+      /* Port-level messages only (e.g. missing game files); not part of the original UI. */
       #overlay {
-        position: absolute;
+        position: fixed;
         inset: 0;
         display: flex;
         align-items: center;
         justify-content: center;
-        font-size: 28px;
-        letter-spacing: 3px;
-        background: rgba(0, 0, 0, 0.35);
+        padding: 24px;
+        box-sizing: border-box;
+        font-family: "Courier New", monospace;
+        font-size: 18px;
+        line-height: 1.6;
+        letter-spacing: 1px;
+        text-align: center;
+        white-space: pre-line;
+        color: #d8f0d8;
+        text-shadow: 0 0 4px #000;
+        background: rgba(0, 0, 0, 0.55);
+        pointer-events: none;
       }
       #overlay.hidden {
         display: none;
@@ -72,9 +71,7 @@
   <body>
     <div id="app"></div>
     <div id="hud">
-      <div id="crosshair">+</div>
-      <div id="status"></div>
-      <div id="objective"></div>
+      <canvas id="igi-ui" width="640" height="480"></canvas>
       <div id="overlay" class="hidden"></div>
     </div>
     <script type="module" src="/src/main.ts"></script>

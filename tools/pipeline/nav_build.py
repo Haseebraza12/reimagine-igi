@@ -66,15 +66,17 @@ snippet implying Y-up ("vertical_force = {0, collective*819.2, 0}", "Yaw (Y
 axis)").  The measured graph statistics contradict it for nav data, so Z-up is
 used; `up_axis` is a parameter so this can be flipped without editing code.
 
-NOT ESTABLISHED
----------------
-How the graph coordinate space is registered against the terrain heightfield.
-The Mission-1 graphs cover roughly a 150 m x 135 m area whose origin is not
-recorded in any decoded file, so nav.json positions are emitted in *level
-origin* metres (y-up) and `offset` defaults to (0, 0, 0).  A future step that
-decodes objects.qvm / objects.qsc placements should establish the terrain's
-world origin and then re-run with the matching offset.  No offset is invented
-here.
+WORLD REGISTRATION  (confidence: "recovered", validated)
+-------------------------------------------------------
+Node positions are offsets from the "Graph position" of the AIGraph task in
+objects.qvm whose task id equals the graph file number (graph4019.dat <->
+AIGraph task 4019, whose Graphdata (264, 300, 876) also matches the file's
+node count, capacity and link count). World position = graph position + node
+offset, in IGI units. Validated against the decoded terrain
+(tools/terrain_ctr.py): 206 of 289 nodes lie on the surface within 0.25 m
+(median residual 0) and 82 stand on floors/roofs. Five nodes in placeholder
+graphs (e.g. graph2) have graph-local coordinates and no meaningful world
+position.
 """
 
 from __future__ import annotations

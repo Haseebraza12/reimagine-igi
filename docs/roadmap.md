@@ -1,85 +1,115 @@
 # Desktop browser implementation roadmap
 
-The desired result is one original-looking mission that runs locally in a
-desktop browser, followed by broader compatibility. The supplied directory
-contains only `missions/location0/level1`; other missions will require their
-reference data. There is no honest fixed timeline until the asset and world
-formats are understood.
+Goal: one original-looking mission running locally in a desktop browser from
+the player's own game files, then broader compatibility. The supplied
+installation contains only `missions/location0/level1` ("Trainyard").
 
-## 1. Recover an asset pipeline
+Status legend: **done** (implemented from recovered rules and checked
+against data), **partial**, **open**. Every recovered value is listed in
+[evidence-ledger.md](evidence-ledger.md).
 
-Current: file hashes, complete resource-member index, script symbol tables,
-PE triage, and experimental first-level texture previews.
+## 1. Asset decoding — done
 
-Next: trace the resource and texture readers, recover model vertex/index/UV
-layouts, materials, lightmaps, terrain and object placements. Keep every
-conversion tied to source hashes and file ranges. Validate representative
-objects against native rendering before treating a conversion as correct.
+The browser decodes the original files directly (`web-port/src/loaders/`):
 
-Acceptance: one actual textured IGI building renders in a browser with verified
-dimensions, orientation, UVs, material and lighting. A textured placeholder
-cube does not establish this milestone.
+- resource archives, v11 / v9 textures, rigid and skinned models with their
+  attachments, model / texture tables, baked lightmaps (`.olm`);
+- skeletons and `.iff` animations;
+- the mission task tree and every `.qvm` script (declarative and
+  executable, [qvm-vm.md](qvm-vm.md));
+- weapon configuration, ammo types (`ammo/*/ammo.qvm`), ILSF sounds (PCM and
+  IMA ADPCM), localized text, the HUD / menu / map-computer sprites and
+  fonts, the terrain.
 
-## 2. Reconstruct one static level
+## 2. Static level and rendering — done
 
-Combine terrain, placed objects, shared assets, skies and baked lighting.
-Build a dependency manifest so a mission loads only the resources it uses.
-Investigate object collision geometry separately from visible geometry.
+- Terrain: the exe's per-frame octree LOD walk (threshold 163, Chebyshev
+  metric, no hysteresis), the vertex geomorph, HeightMap relief from level
+  14, the coarse / fine material layers, per-pixel lightmaps, per-vertex fog
+  ([terrain.md](terrain.md) §7).
+- Every placed instance with its ATTA sub-models, model LODs from `lod.qvm`,
+  DNER block flags, baked lightmaps or the original vertex lighting; deferred
+  lightmapped blocks also take the vertex light ([rendering.md](rendering.md)).
+- Sky dome, cloud layers, exponential fog, the 4:3 camera.
+- Wires stretched between their end points ([wire.md](wire.md)).
+- The railway embankment along the exe's spline, the trains, helicopters
+  (rotor blur copies) and the truck on the recovered vehicle physics
+  ([vehicles.md](vehicles.md)).
+- Weapon / ammo pickups (gun body or ammo model, vertex-lit) and dropped
+  guns ([interactions.md](interactions.md)).
+- Cut-scene camera filters (LINE, BAND, HANDICAM), letterbox, subtitles, the
+  exact camera shake ([mission.md](mission.md)).
+- Bullet holes, impact dust and fragments, tracers, blood, shell casings,
+  muzzle flashes ([rendering.md](rendering.md) §7).
 
-Acceptance: freely inspect the first mission and compare fixed camera views
-with the original. Record unresolved visual differences.
+Open: comparing fixed camera views with the running original (no reference
+captures exist in this repository).
 
-## 3. Add player movement and collision
+## 3. Player — done
 
-Trace player initialization and movement, input state, camera and collision.
-Recover candidate constants from QVM calls but establish their units and
-meaning in the native host functions. Measure walking, running, crouching,
-jumping, slopes and camera motion in the original.
+- The exe's movement state graph (49 states: walk / run toggle,
+  hold-to-crouch, jump at 0.4× clip speed, fall, landing, lean, map
+  computer) on the recovered body animation ([gameplay.md](gameplay.md)
+  "Player movement state graph").
+- Three-ray sweep against the HumanCollision hulls and the terrain, ground
+  probe with step-up and recovery, slopes, platform carry (trains, cars)
+  ([collision.md](collision.md)).
+- Mouse look per tick with the profile's invert flag; the third-person orbit
+  camera while attached / using (mode 3) and when dead (mode 5), with the
+  player's body drawn ([interactions.md](interactions.md) §10).
+- Use / Activate: doors, switches, terminals (hacking), ladders, fences,
+  wires; pickups ([interactions.md](interactions.md)).
+- Footstep, landing and hit sounds; landing dip, hit and explosion shake.
+- The exe's animation blend tree (linear 6-update fades, slerp, root motion
+  and pelvis height mixed by the same weight) for the player, the soldiers
+  and the arms ([characters.md](characters.md) "Blending").
 
-Acceptance: replay fixed input sequences and compare displacement and camera
-angles at multiple frame rates. Use a fixed simulation timestep as an initial
-implementation choice, then validate it against the reference behavior.
+## 4. Weapons and damage — done
 
-## 4. Make one mission playable
+- The weapon state machine (ready, fire, reload, switch, peek, knife, dry
+  fire, holstered, map computer), rate of fire, bursts, the exe's pellet
+  direction, recoil, ricochet and penetration ([weapons-view.md](weapons-view.md)).
+- Per-zone damage on the posed bone-model collision of soldiers and of the
+  player.
+- Object damage: glass, explosive barrels, terminals, explode objects,
+  security-camera lenses; the explosion itself (damage, knock-back, shake,
+  fragments, fireballs, chain reactions) ([damage.md](damage.md)).
 
-Recover one weapon, ammo/reload/damage rules, one enemy's perception and state
-transitions, mission triggers and an objective. Add native-format animation and
-browser audio only as their formats and behavior become established.
+## 5. Soldiers and mission — done, with listed gaps
 
-Acceptance: start the first mission, move and collide correctly, use one weapon,
-encounter one functional enemy, complete an objective and reach a completion
-state. Until then this is a viewer/prototype, not a playable IGI port.
+- Soldiers: the decoded HumanSoldier state graph, the original AI scripts on
+  the reimplemented script VM, perception on the exe's phase ticks with other
+  humans blocking sight, hearing (including ladder, fence and door noises),
+  route graphs (opening doors on door legs), combat decisions, firing, vehicle
+  riders attached to their train / helicopter / truck ([ai.md](ai.md),
+  [characters.md](characters.md)).
+- Tick order: the task tree's own node order — doors, areas, vehicles and
+  cut-scenes before the player, each soldier at its node, LevelFlow last.
+- Mission runtime: cut-scenes, doors, switches, alarms, security cameras,
+  radio messages, objectives, mission complete / failed
+  ([mission.md](mission.md)).
+- HUD, map computer, menus and sub-screens, loading screen and sound
+  ([hud.md](hud.md), [audio.md](audio.md)).
 
-## 5. Optimize with measurements
+Gaps (documented in code and in the documents above):
 
-The reference data is already only about 74 MiB, so preserving graphics does
-not require reducing polygon counts or texture resolution at the outset.
-Browser memory and frame cost still need measurement: download size is not
-decoded texture memory, and asset conversions can increase either.
+- the intro movies (Indeo 5) are skipped: playing them needs a decoder
+  decision (see README);
+- the credits text is compiled into igi.exe and is shown only if igi.exe is
+  staged (not done; a decision for the owner);
+- the Graphics menu's performance options (applied by `FUN_00405e50` at
+  level load: terrain threshold, an LOD scale, four other toggles) are stored
+  but not applied; the port renders the shipped GOGfxPerformance(0);
 
-Proposed starting renderer: TypeScript and Three.js with WebGL2. This is an
-implementation choice, not recovered evidence. Three.js provides a
-[glTF loader](https://threejs.org/docs/pages/GLTFLoader.html); evaluate GLB after
-model recovery. Keep shaders simple and reproduce original baked lighting
-rather than introducing a new lighting model.
+## 6. Optimise with measurements — partial
 
-Profile first, then evaluate visibility culling, original LOD behavior,
-instancing, mission-based loading and audio compression. Evaluate
-[KTX2](https://registry.khronos.org/KTX/specs/2.0/ktxspec.v2.html) texture storage
-against image comparisons and GPU support. Lossy compression and visual fidelity
-are a tradeoff; no promised download size or frame rate has been measured yet.
-
-Use WebAssembly only if profiling justifies porting an isolated CPU subsystem.
-It does not supply Windows/DirectX compatibility. The
-[Emscripten portability guide](https://emscripten.org/docs/porting/guidelines/portability_guidelines.html)
-describes source-porting constraints; it is not an EXE conversion workflow.
+The automated checks run on a software renderer (SwiftShader). The terrain
+is one draw call of ~3k triangles per frame (was ~430k). No frame rate has
+been measured on real GPU hardware here. Profile before changing LOD,
+culling or texture handling.
 
 ## Evidence discipline
 
-Each subsystem should have a source-bound finding, a behavior specification,
-an implementation and a reference comparison. Record observed, recovered and
-inferred claims separately. Unknowns remain unknown until tested.
-
-Keep game binaries and converted assets local. A potential release can load
-player-selected local files, or use assets with redistribution arrangements.
-Hosting and release packaging come after a playable, validated slice exists.
+Each subsystem keeps a source-bound finding, an implementation and a test.
+Observed, recovered and inferred claims stay separate; unknowns stay unknown
+until tested. Game files and anything derived from them stay local.

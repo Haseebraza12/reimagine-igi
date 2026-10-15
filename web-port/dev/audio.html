@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:," />
+    <title>IGI audio harness (dev)</title>
+    <style>
+      body {
+        margin: 16px;
+        background: #111;
+        color: #ddd;
+        font: 13px/1.4 ui-monospace, monospace;
+      }
+      pre {
+        white-space: pre-wrap;
+      }
+      button {
+        margin: 4px 8px 4px 0;
+      }
+    </style>
+  </head>
+  <body>
+    <h3>IGI audio harness (dev only)</h3>
+    <p>
+      Loads the original sounds from /raw/, renders scenarios into an OfflineAudioContext at 22050 Hz and reports
+      levels. Results: <code>window.__audioHarness</code>. The buttons play through a live AudioContext.
+    </p>
+    <div id="live"></div>
+    <pre id="out">running…</pre>
+    <script type="module" src="./audio.ts"></script>
+  </body>
+</html>

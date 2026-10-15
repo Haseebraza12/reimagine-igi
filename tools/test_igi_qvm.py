@@ -66,6 +66,24 @@ class QVMTests(unittest.TestCase):
         self.assertEqual(first["value"], 100000)
         self.assertEqual(second["value"], 32)
 
+    def test_call_tree_decodes_nested_calls_and_literals(self):
+        # Outer(-1, Host(1), CONST, TRUE) with Host nested as an argument.
+        nested_start = 12 + 4 * 4
+        args = [b"\x10\x2c\x00"]
+        nested_pos = nested_start + 3
+        inner = (b"\x0d\x00\x18" + struct.pack("<I", 1) + struct.pack("<I", nested_pos + 16)
+                 + b"\x14" + struct.pack("<i", 2) + b"\x10\x00" + b"\x00")
+        args += [inner, b"\x0d\x01\x00", b"\x0d\x02\x00"]
+        code = call_code(args)  # ends with POP; BRK
+        tree = QVM(fixture(code, symbols=("Host", "CONST", "TRUE"))).call_tree()
+        self.assertEqual(tree, [{"fn": "Host", "args": [-1, {"fn": "Host", "args": [1]},
+                                                         {"symbol": "CONST"}, True]}])
+
+    def test_call_tree_rejects_unknown_opcode(self):
+        code = call_code([b"\x7e\x00"])
+        with self.assertRaises(FormatError):
+            QVM(fixture(code)).call_tree()
+
     def test_unknown_argument_does_not_guess_or_hide_later_constants(self):
         qvm = QVM(fixture(call_code([b"\x7e\xa0\x86\x01\x00\x00", b"\x03\x20\x00"])))
         report = qvm.calls()

@@ -21,11 +21,20 @@
  *           type 3:   indexCount, next, slot, _, vertexOffset, vertexCount, 4 x _
  *         followed by indexCount u16 block-local indices.
  *         `slot` indexes the model's texture list in the level .mtp.
+ *         Render flags read by igi.exe (docs/rendering.md section 5,
+ *         recovered FUN_0052f2c0 / FUN_004ad570): the s16 at block +0x16
+ *         (type 0/1) / +0x18 (type 3) non-zero = deferred (drawn after the
+ *         opaque pass, depth-sorted, alpha blended); bit 0 of the byte at
+ *         +0x18 (type 0/1) / +0x1c (type 3) = additive (ONE/ONE, unlit,
+ *         unfogged); the byte at +0x1b / +0x1f feeds TEXTUREFACTOR alpha
+ *         (no stage reads it; open question).
  *   ATTA  68-byte records: char[16] sub-model, f32 x3 offset, f32 x9 matrix,
  *         i32 bone. The matrix is applied as a row vector (v' = v * M):
  *         with that reading attached furniture sits inside its host rooms
  *         with zero wall penetrations, versus 40 per desk the other way
  *         (confidence: recovered, docs/formats.md "Models").
+ *   PMTL  8-byte records {u16 w, u16 h, 0, 0}: the size of each baked .olm
+ *         lightmap (equals the .olm size for all 1,308 level-1 files)
  *   HSMC  two 32-byte headers {faces, vertices, materials, spheres, 4 x 0};
  *         each count equals the matching XTVC/ECFC/TAMC/HPSC chunk (492/492).
  *   XTVC  16-byte vertices f32 xyz + u32; ECFC 8-byte faces u16 a,b,c + u16.
@@ -55,6 +64,12 @@ export interface MefGroup {
   count: number;
   /** Index into the model's texture list (.mtp). */
   materialSlot: number;
+  /** Raw s16 at DNER block +0x16 (type 0/1) / +0x18 (type 3): non-zero = deferred alpha-blended block [recovered]. */
+  deferredFlag: number;
+  /** Raw byte at +0x18 (type 0/1) / +0x1c (type 3): bit 0 = additive ONE/ONE block [recovered]. */
+  blendFlags: number;
+  /** Raw byte at +0x1b (type 0/1) / +0x1f (type 3): TEXTUREFACTOR = (255 - byte) << 24, unused by any stage [recovered value, use open]. */
+  textureFactorByte: number;
 }
 
 export interface MefCollisionMesh {
@@ -76,6 +91,8 @@ export interface MefModel {
   attachments: MefAttachment[];
   /** Up to two collision meshes (HSMC); empty when the model has none. */
   collision: MefCollisionMesh[];
+  /** PMTL lightmap sizes [w, h] (type 3 models with baked lighting). */
+  lightmapSizes: Array<[number, number]>;
   min: [number, number, number];
   max: [number, number, number];
 }
@@ -192,7 +209,14 @@ export function readMef(buffer: ArrayBuffer): MefModel {
     }
     if (off + header + indexCount * 2 > dner.size) fail(`DNER block +${off} indices outside chunk`);
     if (written + indexCount > indices.length) fail("DNER holds more faces than D3DR declares");
-    groups.push({ start: written, count: indexCount, materialSlot: slot });
+    groups.push({
+      start: written,
+      count: indexCount,
+      materialSlot: slot,
+      deferredFlag: view.getInt16(at + (modelType === 3 ? 0x18 : 0x16), true),
+      blendFlags: view.getUint8(at + (modelType === 3 ? 0x1c : 0x18)),
+      textureFactorByte: view.getUint8(at + (modelType === 3 ? 0x1f : 0x1b)),
+    });
     for (let i = 0; i < indexCount; i += 3) {
       const a = view.getUint16(at + header + i * 2, true);
       const b = view.getUint16(at + header + (i + 1) * 2, true);
@@ -260,6 +284,14 @@ export function readMef(buffer: ArrayBuffer): MefModel {
     }
   }
 
+  const lightmapSizes: Array<[number, number]> = [];
+  for (const pmtl of all("PMTL")) {
+    if (pmtl.size % 8 !== 0) fail(`PMTL size ${pmtl.size} not a multiple of 8`);
+    for (let r = 0; r < pmtl.size / 8; r++) {
+      lightmapSizes.push([view.getUint16(pmtl.offset + r * 8, true), view.getUint16(pmtl.offset + r * 8 + 2, true)]);
+    }
+  }
+
   return {
     modelType,
     positions,
@@ -270,6 +302,7 @@ export function readMef(buffer: ArrayBuffer): MefModel {
     groups,
     attachments,
     collision,
+    lightmapSizes,
     min,
     max,
   };

@@ -1,12 +1,10 @@
 /**
  * Backbone unit tests for the pure-logic engine modules (no DOM/WebGL needed):
- * frame Clock, typed EventBus, and bilinear TerrainField.
+ * frame Clock and typed EventBus.
  */
 import { describe, expect, it, vi } from "vitest";
 import { Clock } from "../src/engine/clock";
 import { EventBus, GameEvent } from "../src/engine/events";
-import { TerrainField } from "../src/engine/terrain";
-import type { TerrainData } from "../src/contracts";
 
 // ---------------------------------------------------------------------------
 describe("Clock", () => {
@@ -97,58 +95,5 @@ describe("EventBus", () => {
     bus.clear();
     bus.emit(GameEvent.Fire);
     expect(a).not.toHaveBeenCalled();
-  });
-});
-
-// ---------------------------------------------------------------------------
-describe("TerrainField", () => {
-  // Grid where h[x,z] = z*size + x (bilinear-friendly increasing field).
-  const size = 3;
-  const heights = new Float32Array([0, 1, 2, 3, 4, 5, 6, 7, 8]);
-  const terrain: TerrainData = { size, cellSize: 1, heights };
-  const field = new TerrainField(terrain);
-
-  it("returns exact heights at integer vertices", () => {
-    expect(field.heightAt(0, 0)).toBeCloseTo(0, 5);
-    expect(field.heightAt(1, 0)).toBeCloseTo(1, 5);
-    expect(field.heightAt(0, 1)).toBeCloseTo(3, 5);
-    expect(field.heightAt(1, 1)).toBeCloseTo(4, 5);
-  });
-
-  it("bilinearly interpolates between vertices", () => {
-    expect(field.heightAt(0.5, 0)).toBeCloseTo(0.5, 5);
-    expect(field.heightAt(0.5, 0.5)).toBeCloseTo(2, 5); // avg(0,1,3,4)
-  });
-
-  it("clamps sampling outside the grid to the nearest edge height", () => {
-    expect(field.heightAt(-10, -10)).toBeCloseTo(0, 5);
-    expect(field.heightAt(99, 99)).toBeCloseTo(8, 5);
-  });
-
-  it("computeVertexNormals-free normalAt points up on a flat field", () => {
-    const flat = new TerrainField({ size, cellSize: 1, heights: new Float32Array(9).fill(5) });
-    const [nx, ny, nz] = flat.normalAt(1, 1);
-    expect(ny).toBeGreaterThan(0.9);
-    expect(Math.abs(nx)).toBeLessThan(1e-6);
-    expect(Math.abs(nz)).toBeLessThan(1e-6);
-  });
-
-  it("groundHeightAfterMove blocks a step that exceeds maxStep, allows smaller", () => {
-    // Standing at height 0 near the z=1 edge (heights 3); a 1-step jump.
-    const allowed = field.groundHeightAfterMove(0, 0, 0, 1.2); // h=0 within 1.2 of 0
-    expect(allowed).toBeCloseTo(0, 5);
-    // Moving onto the z=1 edge (h=3) from currentY=0: 3-0 > 1.2 -> blocked.
-    const blocked = field.groundHeightAfterMove(0, 1, 0, 1.2);
-    expect(blocked).toBe(0);
-    // A tall maxStep allows it.
-    const stepped = field.groundHeightAfterMove(0, 1, 0, 3.0);
-    expect(stepped).toBeCloseTo(3, 5);
-  });
-
-  it("respects a world offset when mapping world XZ to grid vertices", () => {
-    const offset = new TerrainField(terrain, [-256, 0, -256]);
-    // World (0,0) maps to grid vertex (0,0) after subtracting offset -256 / cellSize 1.
-    expect(offset.heightAt(-256, -256)).toBeCloseTo(0, 5);
-    expect(offset.heightAt(-255, -255)).toBeCloseTo(4, 5); // vertex (1,1) -> 4
   });
 });

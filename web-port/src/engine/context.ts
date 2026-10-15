@@ -1,74 +1,119 @@
 /**
- * GameContext — the single frozen integration contract shared by every engine
- * subsystem. This is the backbone the whole port is wired through: core systems
- * (input/clock/events/render/terrain) populate it, and gameplay systems
- * (player/weapons/AI/objectives/HUD/audio) read and mutate it. Subsystems never
- * import each other directly; they communicate through `ctx` and `ctx.events`.
+ * GameContext — the integration contract shared by every engine subsystem.
+ * Core systems (input/clock/events/render/world) populate it; gameplay systems
+ * (player/weapon/AI/objectives/HUD/audio) read and mutate it. Subsystems talk
+ * through `ctx` and `ctx.events` instead of importing each other.
  *
- * Confidence: scaffolding. Field *names/semantics* are this project's choice;
- * values loaded from the level manifest / generated JSON are recovered or
- * inferred per docs/evidence-ledger.md.
+ * Positions are engine space: metres, y up (see loaders/coords.ts). Values
+ * that come from the original files are documented where they are loaded
+ * (loaders/level.ts); gameplay constants that are not recovered are marked
+ * "inferred" where they are defined.
  */
 import type * as THREE from "three";
-import type { LevelManifest, ObjectiveSpec, Vec3, WeaponSpec } from "../contracts";
-import { Clock } from "./clock";
-import { EventBus } from "./events";
-import { Input } from "./input";
-import { TerrainField } from "./terrain";
+import type { PlayerTuning, Vec3 } from "../contracts";
+import type { IgiLevel, LevelArea, LevelWeapon } from "../loaders";
+import type { Clock } from "./clock";
+import type { EventBus } from "./events";
+import type { Input } from "./input";
+import type { PlayArea } from "./world/character";
+import type { CollisionWorld } from "./world/collision";
 
-/** Live, mutable player state (feet-based position + look angles). */
+/** Live player state; `position` is the feet. */
 export interface PlayerState {
   position: Vec3;
   velocity: Vec3;
-  /** Yaw in radians (0 = -Z, increasing counter-clockwise seen from above). */
+  /** Radians; 0 looks along -z (IGI north), increasing counter-clockwise from above. */
   yaw: number;
-  /** Pitch in radians, clamped to PlayerTuning pitch range. */
   pitch: number;
   grounded: boolean;
   crouching: boolean;
   running: boolean;
+  /**
+   * Remaining health in the original's damage units: maxHealth = the player's
+   * damage capacity (humanplayer.qvm, 3.0); health = maxHealth - damage taken.
+   */
   health: number;
   maxHealth: number;
   alive: boolean;
+  /** Walk instead of run (ToggleWalkRun). */
+  walking: boolean;
+  /** Camera height above the feet: pelvis (animated root) + 0.69 m standing / 0.35 m crouched. */
+  eyeHeight: number;
+  /** View kick offsets (radians) added to the view; they decay x0.9 per tick. */
+  kickPitch: number;
+  kickYaw: number;
+  /** Lean (Peek) camera offsets in metres: sideways (+right) and up. */
+  leanSide: number;
+  leanUp: number;
 }
 
-/** Live, mutable weapon state for the single carried weapon of the slice. */
+/** Live state of the carried weapon. */
 export interface WeaponState {
-  spec: WeaponSpec;
+  spec: LevelWeapon;
   ammo: number;
   reserve: number;
   reloading: boolean;
-  /** Seconds remaining on the current reload (0 when not reloading). */
   reloadRemaining: number;
-  /** Seconds until the next shot is allowed (cyclic rate + spread recovery). */
   cooldownRemaining: number;
+  /** Seconds the trigger has been held continuously (drives spread growth). */
+  heldSeconds: number;
 }
 
-/** Runtime enemy tracked by the AI manager and rendered by the render layer. */
+export type EnemyState = "idle" | "patrol" | "alert" | "engage" | "search" | "dead";
+
+/** Runtime soldier. `position` is the feet. */
 export interface Enemy {
   id: number;
+  taskId: number;
   position: Vec3;
+  velocity: Vec3;
   yaw: number;
+  /** 1 = full health, 0 = dead (IGI stores soldier health on a 0..1 scale). */
   health: number;
   alive: boolean;
-  /** Current AI behaviour label (for HUD/debug). */
-  state: "idle" | "patrol" | "alert" | "engage" | "dead";
-  /** Three.js object for this enemy, added to the scene by the AI manager. */
+  state: EnemyState;
+  aiType: string;
+  weapon: LevelWeapon | null;
   object: THREE.Object3D | null;
-  /** Optional patrol route as nav-node indices (from the level graph). */
-  patrol: number[];
-  patrolCursor: number;
 }
 
-/** Runtime objective with completion tracking. */
 export interface ObjectiveState {
-  spec: ObjectiveSpec;
+  id: string;
+  text: string;
+  area: LevelArea;
   completed: boolean;
 }
 
-/** Optional subsystem slots. Each is created by its owning module and attached
- *  to the context by game.ts; declared optional so the engine boots even when
- *  a subsystem is disabled or fails to initialise. */
+export interface MessageState {
+  id: string;
+  text: string;
+  area: LevelArea;
+  shown: boolean;
+}
+
+/**
+ * The level's task runtime (objects.qvm tasks at 30 Hz): task member
+ * variables and condition expressions, as igi.exe evaluates them
+ * (docs/qvm-vm.md "Expression language", docs/mission.md).
+ */
+export interface TaskRuntimeApi {
+  /** Value of a task member such as "AreaActivate_303.nActive"; undefined when no such member exists. */
+  member(name: string): number | undefined;
+  /**
+   * Evaluate an objects.qvm condition string in float mode, with `this.`
+   * resolving to `selfName` (the owning task's "<Type>_<id>").
+   */
+  condition(expression: string, selfName: string): number;
+  /** Is the task (by id) in the world, i.e. no enclosing ConditionalContainer has removed it? */
+  inWorld?(taskId: number): boolean;
+  /**
+   * Perception phase (0..3) a HumanAI task (by id) took from the process-wide
+   * counter DAT_005c4a48 at this mission's load (loaders/mission.ts
+   * perceptionPhases); undefined when unknown.
+   */
+  perceptionPhase?(taskId: number): number | undefined;
+}
+
 export interface GameSubsystems {
   weapon: import("./combat/weapon").WeaponSystem | null;
   enemies: import("./combat/enemy").EnemyManager | null;
@@ -76,48 +121,69 @@ export interface GameSubsystems {
   audio: import("./audio/audio").AudioManager | null;
   hud: import("./ui/hud").Hud | null;
   effects: import("./fx/effects").Effects | null;
+  /** Task runtime; null until the level is loaded. */
+  tasks: TaskRuntimeApi | null;
+  player: import("./player/player").PlayerController | null;
 }
 
 export interface GameContext {
-  /** Three.js renderer/scene/camera (see render/renderer.ts). */
   renderer: THREE.WebGLRenderer;
   scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
   canvas: HTMLCanvasElement;
-
-  /** Core services. */
   events: EventBus;
   clock: Clock;
   input: Input;
 
-  /** Terrain collision field (null before a level loads). */
-  terrain: TerrainField | null;
+  /** Decoded level (null until loaded). */
+  level: IgiLevel | null;
+  /** Static collision for terrain + placed geometry (null until loaded). */
+  world: CollisionWorld | null;
+  /** Horizontal area with full-detail terrain collision; characters are kept inside it. */
+  playArea: PlayArea | null;
+  tuning: PlayerTuning;
 
-  /** Asset source for converted web assets (public/assets). null before load. */
-  assets: import("../contracts").IAssetSource | null;
-  /** Raw original-file asset source (public/raw). null before load. */
-  raw: import("../contracts").IAssetSource | null;
-  /** Loaded navigation graph from the level (null when absent). */
-  nav: import("../contracts").NavGraph | null;
-
-  /** Loaded level manifest (null before a level loads). */
-  manifest: LevelManifest | null;
-
-  /** Gameplay tuning defaults (may be overridden by generated JSON later). */
-  tuning: import("../contracts").PlayerTuning;
-
-  /** Live gameplay state. */
   player: PlayerState;
   weapon: WeaponState | null;
   enemies: Enemy[];
   objectives: ObjectiveState[];
-
-  /** Optional subsystems. */
+  messages: MessageState[];
   systems: GameSubsystems;
+  /**
+   * The player's first-person view object (igi.exe arms task, human+0x4ec):
+   * arms clip, sway, shake / dip, FOV tangents and the scope flag
+   * (player/first-person.ts). Created by the weapon system; read by the
+   * camera and the arms renderer.
+   */
+  firstPerson?: import("./player/first-person").FirstPersonState;
 
-  /** True while the mission is running (paused when pointer unlocked + menu). */
+  /** Game ticks simulated since the mission (re)started (30 per second, clock.ts). */
+  tick: number;
+  /**
+   * The application tick *(DAT_00563dfc + 0x34) (FUN_00402a30) [recovered]:
+   * reset to 0 at each level load / restart (FUN_004029a0), +1 after every
+   * main-loop tick (FUN_00402250, 0x4023ce), also while the in-game menu
+   * pauses the Game task (Game +0xe0 only stops FUN_00415306 from updating its
+   * children; the MenuManager sets it, FUN_00415c60). So it runs ahead of
+   * `tick` by the paused ticks. The perception phase tests of the soldiers
+   * (FUN_00487b70) and the security cameras read it; when absent they use
+   * `tick`.
+   */
+  appTick?: number;
+  /**
+   * The level RNG at DAT_00577b78 + 0x2c (FUN_00415c20), seeded 0x19111911 at
+   * level start (FUN_00415c90). igi.exe draws the AI, gun spread and kick,
+   * bullet ricochet / penetration and sound picks from this one generator.
+   */
+  rng: import("./ai/rng").LevelRng;
+  /** The 4:3 game frame in CSS pixels (render/renderer.ts); the HUD is laid out in it. */
+  frame: import("./render/renderer").FrameRect;
+
+  /** True while the mission simulation runs. */
   running: boolean;
-
-  /** Request a clean shutdown (stops the frame loop). */
+  /** "loading" | "ready" | "playing" | "complete" | "failed" | "error". */
+  phase: GamePhase;
   requestStop(): void;
 }
+
+export type GamePhase = "loading" | "ready" | "playing" | "complete" | "failed" | "error";

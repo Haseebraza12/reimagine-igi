@@ -6,10 +6,10 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import type { IAssetSource } from "../src/contracts";
 
-/** Absolute path of web-port/public/raw (staged original game files). */
-export const RAW_ROOT = fileURLToPath(new URL("../public/raw", import.meta.url));
+/** Absolute path of web-port/game-data (original game files staged by `npm run stage`). */
+export const RAW_ROOT = fileURLToPath(new URL("../game-data", import.meta.url));
 
-/** Read a file under public/raw as an ArrayBuffer (throws when missing). */
+/** Read a staged game file as an ArrayBuffer (throws when missing). */
 export async function readRaw(relativePath: string): Promise<ArrayBuffer> {
   const buffer = await readFile(`${RAW_ROOT}/${relativePath}`);
   const out = new ArrayBuffer(buffer.byteLength);

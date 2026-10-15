@@ -111,3 +111,55 @@ export function decodeTex(buffer: ArrayBuffer): DecodedTexture {
 
   return { width, height, rgba, format };
 }
+
+/**
+ * LOOP v9 multi-layer texture (terrain.tex).
+ *
+ * Measured on level 1's terrain.tex (confidence: observed):
+ *   0x1C i32 footer offset (590452)   0x20 i32 layer count (18)
+ *   0x28 i32 width, 0x2C height (128 x 128), 0x30 i32 mode (2)
+ *   0x34 + 32 * i: i32 pixel offset, i32 mode, i16 row bytes, i16 width,
+ *                  i16 height, i16 _, 16 reserved bytes
+ *   Layers are packed back to back from 628; the last ends exactly at the
+ *   footer, which starts with "LOOP".
+ * Only mode 2 (A1R5G5B5) layers occur; other modes throw.
+ */
+export function decodeTexLayers(buffer: ArrayBuffer): DecodedTexture[] {
+  const view = new DataView(buffer);
+  const bytes = new Uint8Array(buffer);
+  if (buffer.byteLength < 0x34 || String.fromCharCode(...bytes.subarray(0, 4)) !== "LOOP" || readU32(view, 4) !== 9) {
+    throw new Error("LOOP tex: expected a LOOP v9 layered texture");
+  }
+  const footer = view.getInt32(0x1c, true);
+  const count = view.getInt32(0x20, true);
+  if (count < 1 || count > 256 || 0x34 + count * 32 > buffer.byteLength) throw new Error(`LOOP tex: bad layer count ${count}`);
+  if (footer + 4 > buffer.byteLength || String.fromCharCode(...bytes.subarray(footer, footer + 4)) !== "LOOP") {
+    throw new Error("LOOP tex: v9 footer is missing");
+  }
+  const layers: DecodedTexture[] = [];
+  for (let i = 0; i < count; i++) {
+    const at = 0x34 + i * 32;
+    const offset = view.getInt32(at, true);
+    const mode = view.getInt32(at + 4, true);
+    const rowBytes = view.getInt16(at + 8, true);
+    const width = view.getInt16(at + 10, true);
+    const height = view.getInt16(at + 12, true);
+    if (mode !== 2 || rowBytes !== width * 2) throw new Error(`LOOP tex: layer ${i} has unsupported mode ${mode}`);
+    if (width < 1 || height < 1 || offset < 0 || offset + rowBytes * height > footer) {
+      throw new Error(`LOOP tex: layer ${i} lies outside the pixel area`);
+    }
+    const rgba = new Uint8ClampedArray(width * height * 4);
+    for (let p = 0; p < width * height; p++) {
+      const value = view.getUint16(offset + p * 2, true);
+      const r = (value >> 10) & 31;
+      const g = (value >> 5) & 31;
+      const b = value & 31;
+      rgba[p * 4] = (r << 3) | (r >> 2);
+      rgba[p * 4 + 1] = (g << 3) | (g >> 2);
+      rgba[p * 4 + 2] = (b << 3) | (b >> 2);
+      rgba[p * 4 + 3] = 255; // terrain layers are opaque
+    }
+    layers.push({ width, height, rgba, format: "inferred A1R5G5B5 (v9 layer)" });
+  }
+  return layers;
+}

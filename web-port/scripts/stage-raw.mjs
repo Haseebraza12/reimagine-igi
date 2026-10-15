@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 /**
- * Copy the original game files the web port reads into public/raw/.
+ * Copy the original game files the web port reads into game-data/.
  *
  * The browser loads ORIGINAL files at runtime (decoders live in
- * src/loaders/); nothing is converted. public/raw/ is gitignored and must
- * never be committed or deployed without a redistribution arrangement.
+ * src/loaders/); nothing is converted. The dev/preview servers serve
+ * game-data/ at /raw/ (vite.config.ts). It is gitignored, kept out of public/
+ * so production builds never contain it, and must never be committed or
+ * deployed without a redistribution arrangement.
  *
  *   npm run stage                       # reads ../Game Files
  *   IGI_GAME_DIR=/path/to/IGI npm run stage
@@ -18,7 +20,7 @@ import { fileURLToPath } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 const webPort = resolve(here, "..");
 const source = resolve(process.env.IGI_GAME_DIR ?? join(webPort, "..", "Game Files"));
-const target = join(webPort, "public", "raw");
+const target = join(webPort, "game-data");
 
 /** Files (or whole directories, trailing "/") the runtime needs. */
 const REQUIRED = [
@@ -29,6 +31,7 @@ const REQUIRED = [
   "missions/location0/level1/lightmaps/lightmaps.res",
   "missions/location0/level1/terrain/",
   "missions/location0/level1/graphs/",
+  "missions/location0/level1/ai/",
   "missions/location0/common/location0.mtp",
   "missions/location0/common/models/location0.res",
   "missions/location0/common/textures/location0.res",
@@ -37,10 +40,31 @@ const REQUIRED = [
   "magicobj/magicobj.qvm",
   "weapons/weaponconfig.qvm",
   "humanplayer/humanplayer.qvm",
+  "config.qvm",
+  "common/ai/",
   "common/sounds/sounds.res",
   "language/english/objectives.res",
   "language/english/messages.res",
   "language/english/missions.res",
+  // Sound, character, interface and rendering data (audio, animation, HUD,
+  // menus, effects).
+  "missions/location0/level1/sounds/",
+  "missions/location0/level1/mission.qvm",
+  "missions/location0/level1/level1.dat",
+  "missions/location0/common/location0.dat",
+  "common/",
+  "screens/",
+  "menusystem/",
+  "weapons/",
+  // DefineAmmoType per calibre ("LOCAL:ammo", FUN_0047b3d0): tracers, pickup models.
+  "ammo/",
+  "physicsobj/",
+  "computer/",
+  "material/",
+  "animtrigger/",
+  "lod.qvm",
+  "config.qsc",
+  "language/english/",
 ];
 
 async function listFiles(dir) {

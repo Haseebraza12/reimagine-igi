@@ -1,63 +1,82 @@
-# Loader API contract (integration backbone)
+# Loader API (integration boundary)
 
-This is the exact API boundary between the parser layer and the engine layer.
-Both sides MUST match these signatures. Source of truth types: `web-port/src/contracts.ts`.
+The web port decodes the **original game files at runtime**; there is no
+conversion step. `web-port/src/loaders/` reads the formats, and
+`web-port/src/engine/` consumes only `src/contracts.ts` plus
+`src/loaders/index.ts`.
 
-## `web-port/src/loaders/index.ts` (owned by the loaders agent)
+## Asset source
 
 ```ts
-import type { DecodedTexture, IAssetSource, LevelManifest, TerrainData, Vec3 } from "../contracts";
-
-/** HTTP asset source rooted at baseUrl (default "/raw/"). exists() uses HEAD. */
-export function createHttpAssetSource(baseUrl?: string): IAssetSource;
-
-/** Parse an IGI ILFF/IRES .res container. Throws Error on malformed input. */
-export function readIlffMembers(buffer: ArrayBuffer): Array<{ name: string; offset: number; size: number; payload: ArrayBuffer }>;
-
-/** Decode a LOOP .tex bitmap (v11 observed: A1R5G5B5 / BGRA8888). Throws on unknown variants. */
-export function decodeTex(buffer: ArrayBuffer): DecodedTexture;
-
-/** Parse a .hmp heightfield. size = vertices per side. heights normalized to 0..1 (raw/65535). */
-export function readHmp(buffer: ArrayBuffer): { size: number; heights: Float32Array };
-
-/** Parse a .lmp lightmap: uint8 intensities, size*size. */
-export function readLmp(buffer: ArrayBuffer): { size: number; intensities: Uint8Array };
-
-/** Filesystem-backed source for vitest (Node only). Lives in its own module so the
- *  browser bundle never pulls in node:fs. Tests import it directly:
- *  `import { createFsAssetSource } from "../src/loaders/fs-source";` */
-// src/loaders/fs-source.ts
-export function createFsAssetSource(rootDir: string): IAssetSource;
-
-/**
- * Load terrain for the level described by `spec`.
- * Order: heightsBin via `assetsSource` -> raw hmp via `rawSource`.
- * `heightsBin` = Float32 LE, size*size, row-major (index = z*size + x), **already
- * scaled to world units by the pipeline** (loaders use values as-is).
- * Raw `.hmp` path: values are raw/65535 normalized; loaders apply `heightScale`.
- * Attaches lightmap when available (lightmapBin: uint8 size*size, or raw .lmp).
- */
-export function loadTerrain(
-  rawSource: IAssetSource,
-  assetsSource: IAssetSource,
-  spec: LevelManifest["terrain"],
-): Promise<TerrainData>;
-
-/** Fetch "assets/<name>/manifest.json" from the assets source; null when absent. */
-export function loadLevelManifest(assetsSource: IAssetSource, name: string): Promise<LevelManifest | null>;
+interface IAssetSource {
+  exists(path: string): Promise<boolean>;
+  readBinary(path: string): Promise<ArrayBuffer>; // forward slashes, no leading slash
+}
+createHttpAssetSource(baseUrl = "/raw/"): IAssetSource;   // browser (HEAD for exists)
+createFsAssetSource(rootDir): IAssetSource;              // Node/tests: import "src/loaders/fs-source"
 ```
 
-## Runtime asset locations served by Vite
+`/raw/` is served from `web-port/game-data/` by the Vite dev and preview
+servers (`vite.config.ts`), filled from your installation by `npm run stage`
+(`web-port/scripts/stage-raw.mjs`; set `IGI_GAME_DIR` to point elsewhere).
+Paths mirror the installation (`missions/location0/level1/...`). The folder is
+gitignored and deliberately not under `public/`, so `vite build` never copies
+game files into `dist/`. A static deployment must serve your files at `/raw/`
+itself.
 
-| URL root      | Content                                                            | Producer          |
-|---------------|--------------------------------------------------------------------|-------------------|
-| `/raw/`       | Original game files (local only, gitignored)                       | staging (already) |
-| `/assets/`    | Converted PNG/glTF/JSON/bin, incl. `level1/manifest.json`          | tools/pipeline    |
-| `/generated/` | Gameplay JSON (`player.json`, `weapons.json`, `level1-gameplay.json`) | tools/igi_qvm.py |
+## Whole level
 
-## Engine consumption rules
+```ts
+loadIgiLevel(raw: IAssetSource, paths = LEVEL1_PATHS): Promise<IgiLevel>
+decodeLevelTexture(level, textureKey): DecodedTexture
+```
 
-- Engine imports ONLY `src/contracts.ts` + `src/loaders/index.ts`.
-- Engine must boot without any assets: procedural synthetic terrain + defaults.
-- Generated JSON (if present) overrides `DEFAULT_PLAYER_TUNING` / `DEFAULT_WEAPONS` and
-  supplies objectives/spawn/patrols; schema: `GeneratedData<T>` from contracts.ts.
+`IgiLevel` (engine space: metres, y up, −z = IGI north; see
+`loaders/coords.ts`):
+
+| Field | Content |
+|---|---|
+| `name`, `description` | From `language/english/missions.res` ("Trainyard") |
+| `origin` | IGI position mapped to engine (0, 0, 0): player x/y, base ground z |
+| `models` | `LevelModel` geometry per used model (positions, normals, uv, CCW indices, groups with texture keys) |
+| `instances` | Every placed model incl. ATTA sub-models and spline segments, with a column-major 4×4 matrix |
+| `terrain` | Collision mesh (`detail`), textured render meshes (`detailRender`, `farRender`), light colours, and the `TerrainOctree` for height queries |
+| `textures` | Raw `.tex` payloads by key `"<archive>:<name>"` |
+| `lightmaps` | Decoded baked object lightmaps by `.olm` name; `instances[i].lightmap` names the one an instance uses (null = vertex-lit) |
+| `objectLight` | Vertex-lit path inputs: sun direction (engine axes), front colour, object ambient |
+| `viewModels` | Per carried weapon id: the gun model and its attached parts, in gun-local space |
+| `player` | Spawn position (feet), yaw, weapon ids, ammo pools |
+| `soldiers` | Position, yaw, team, AI type, weapon id, `view` (AI-script view length/angles) and `combat` (`settings.qvm` fields at `difficulty`) |
+| `difficulty` | `GOGameDiff` from `config.qvm` (`"GD_2"`) |
+| `objectives`, `messages` | Text plus engine-space trigger boxes (`AreaActivate`) |
+| `environment` | Sky/fog/ambient/sun colours, sun direction, cloud layer |
+| `weapons` | `LevelWeapon` per `WEAPON_ID_*` from `weaponconfig.qvm` |
+| `sounds` | Decoded PCM for the weapons in use |
+| `warnings` | Non-fatal decoding notes (e.g. message conditions ignored) |
+
+## Format readers
+
+| Function | File | Notes |
+|---|---|---|
+| `readIlffMembers(buf)` | `.res` | ILFF/IRES members with virtual names |
+| `decodeTex(buf)` / `decodeTexLayers(buf)` | `.tex` v11 / v9 | RGBA8888, rows top-down |
+| `readQvmCallTree(buf)` / `readQvmFile(buf)` | `.qvm` | Call trees; throws on unknown opcodes |
+| `readQvmLiteralCalls(buf, names)` | executable `.qvm` (AI scripts) | Single-literal arguments of the named calls; each call site's layout is validated |
+| `readTaskTree(calls)` / `flattenTasks(tasks)` | `objects.qvm` | Schema-decoded `IgiTask` tree |
+| `readMef(buf)` | `.mef` | IGI model space; CCW indices; attachments; collision meshes |
+| `readMtp(buf)` | `.mtp` | Model → texture names |
+| `decodeIlsf(buf)` | `.wav` (ILSF PCM) | Float samples |
+| `decodeOlm(buf)` | `.olm` | Baked object lightmap as RGBA8888 (alpha 255) |
+| `new TerrainOctree(ctr, cmd, hmp?, heightMaps?)` | terrain | `mesh()`, `cells()`, `ringCells()`, `heightsAt()` in IGI units |
+| `new TerrainLook(octree, input, bit, lmp)` | terrain | `buildRenderMesh(cells)`: layers, UVs, lightmap values |
+
+Every reader validates sizes and offsets and throws an `Error` naming the
+file offset instead of returning partial or guessed data.
+
+## Engine rules
+
+- Import only `src/contracts.ts` and `src/loaders/index.ts` from the engine.
+- Without staged files the game shows instructions for `npm run stage`; it
+  never substitutes invented content.
+- Gameplay values that are not recovered (movement speeds, AI behaviour,
+  damage scaling) are marked "inferred" where they are defined.

@@ -224,6 +224,66 @@ class QVM:
                 "recovered_argument_count": recovered, "calls": calls,
                 "limitations": "Static symbolic call sites only; host behavior and numeric parameter meanings unknown."}
 
+    def call_tree(self):
+        """Every top-level statement as a nested call tree (no execution).
+
+        Grammar recovered from objects.qvm (all 1,418 calls; matches the
+        community decompile on 18,105 of 18,127 nodes, the rest being later
+        text edits):
+            statement := PUSHI fn; CALL offsets; BRA end; arg*; end: POP
+            nested    := PUSHI fn; CALL offsets; BRA end; arg*; end: BRK
+            arg       := (literal [MINUS] | nested) BRK
+        Returns [{"fn": name, "args": [...]}, ...]; literals become numbers or
+        strings, TRUE/FALSE booleans, other identifiers {"symbol": name}.
+        Raises FormatError on anything outside that grammar.
+        """
+        def call_at(pos, terminator):
+            name = self.instruction(pos)
+            if name["mnemonic"] != "PUSHI":
+                raise FormatError(f"expected PUSHI function at code {pos:#x}")
+            call = self.instruction(pos + name["size"])
+            if call["mnemonic"] != "CALL":
+                raise FormatError(f"expected CALL at code {pos + name['size']:#x}")
+            branch = self.instruction(pos + name["size"] + call["size"])
+            if branch["mnemonic"] != "BRA":
+                raise FormatError(f"expected BRA at code {pos + name['size'] + call['size']:#x}")
+            start = pos + name["size"] + call["size"] + branch["size"]
+            end = branch["target_code_offset"]
+            targets = call["argument_code_offsets"]
+            if not ((not targets and start == end) or (
+                    targets[0] == start and all(a < b for a, b in zip(targets, targets[1:]))
+                    and targets[-1] < end)):
+                raise FormatError(f"CALL arguments do not partition the skipped region at code {pos:#x}")
+            args = [argument(a, b) for a, b in zip(targets, targets[1:] + [end])]
+            if self.instruction(end)["mnemonic"] != terminator:
+                raise FormatError(f"call at code {pos:#x} does not end with {terminator}")
+            return {"fn": name["value"], "args": args}, end + 1
+
+        def argument(start, end):
+            first = self.instruction(start, end)
+            if (first["mnemonic"] == "PUSHI" and first["value"] not in ("TRUE", "FALSE")
+                    and start + first["size"] < end
+                    and self.instruction(start + first["size"])["mnemonic"] == "CALL"):
+                node, after = call_at(start, "BRK")
+                if after != end:
+                    raise FormatError(f"nested call at code {start:#x} does not fill its argument")
+                return node
+            item = self.constant_argument(start, end, 0)
+            if item["status"] != "recovered":
+                raise FormatError(f"unsupported argument expression at code {start:#x}")
+            if item["kind"] == "symbol":
+                return {"TRUE": True, "FALSE": False}.get(item["value"], {"symbol": item["value"]})
+            return item["value"]
+
+        statements = []
+        pos = 0
+        while pos < len(self.code):
+            if self.code[pos] == 0 and pos + 1 == len(self.code):
+                return statements
+            node, pos = call_at(pos, "POP")
+            statements.append(node)
+        raise FormatError("bytecode does not end with BRK")
+
 
 def source_calls(source):
     """Parse only the simple call statements supplied in config.qsc."""

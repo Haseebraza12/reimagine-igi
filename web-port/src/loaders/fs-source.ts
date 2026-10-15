@@ -22,7 +22,7 @@ function resolveUnder(rootDir: string, path: string): string {
 
 /**
  * Create an asset source rooted at a local directory (e.g. the repo's
- * `web-port/public/raw`). Paths use forward slashes, no leading slash.
+ * `web-port/game-data`). Paths use forward slashes, no leading slash.
  */
 export function createFsAssetSource(rootDir: string): IAssetSource {
   return {

@@ -79,4 +79,122 @@ export const GameEvent = {
   MissionComplete: "game:mission-complete",
   /** A status message for the HUD. payload: { text: string, ttl?: number } */
   Status: "game:status",
+  /** Trigger released. payload: { weaponId: string } */
+  TriggerReleased: "game:trigger-released",
+  /**
+   * A run of shots ended: trigger released, magazine empty, burst limit
+   * reached, reload started or weapon switched. payload: { weaponId: string }
+   */
+  FireStopped: "game:fire-stopped",
+  /** Player switched weapon. payload: { weaponId: string, name: string } */
+  WeaponChanged: "game:weapon-changed",
+  /** A soldier fired. payload: { position: Vec3, weaponId: string } */
+  EnemyFire: "game:enemy-fire",
+  /** Mission failed. payload: { text: string } */
+  MissionFailed: "game:mission-failed",
+
+  // --- Contract for the recovered subsystems (payload types below) ---------
+  /** A StatusMessage task (radio message / pickup / cut-scene line) is sent. payload: StatusMessagePayload */
+  StatusMessage: "game:status-message",
+  /** A bullet hit world geometry. payload: ImpactPayload */
+  Impact: "game:impact",
+  /** A character's foot touched down (animation trigger 1010). payload: FootstepPayload */
+  Footstep: "game:footstep",
+  /** A character landed after falling/jumping. payload: LandPayload */
+  Land: "game:land",
+  /** An animation sound trigger (ids >= 1000, animtrigger.qvm) fired. payload: AnimTriggerPayload */
+  AnimTrigger: "game:anim-trigger",
+  /** A soldier took damage. payload: EnemyHitPayload */
+  EnemyHit: "game:enemy-hit",
+  /** A soldier detected the player (AIEVENT_ENEMYDETECTION). payload: { enemyId: number; position: Vec3 } */
+  Detected: "game:detected",
+  /** The player picked something up. payload: { kind: "weapon" | "ammo"; name: string } */
+  Pickup: "game:pickup",
+  /** The player jumped. payload: { actor: "player" } (plays jump_1, docs/audio.md) */
+  Jump: "game:jump",
+  /** An enemy bullet passed close to the player. payload: { point: Vec3 } (the bullet path's closest point) */
+  NearMiss: "game:near-miss",
+  /** StatusMessageScreen_ClearMessages() from a task expression: remove every radio message. payload: undefined */
+  StatusClear: "game:status-clear",
+  /** A cut-scene started / ended. payload: { id: number } */
+  CutsceneStart: "game:cutscene-start",
+  CutsceneEnd: "game:cutscene-end",
 } as const;
+
+type Vec3 = [number, number, number];
+
+/** Who did something: the player, or a soldier by Enemy.id. */
+export type Actor = "player" | number;
+
+/** payload of GameEvent.Fire / FireStopped (and EnemyFire with shooter = enemy id). */
+export interface FirePayload {
+  weaponId: string;
+  shooter: Actor;
+  /** Muzzle position, engine space. */
+  position: Vec3;
+}
+
+/** payload of GameEvent.StatusMessage (StatusMessage task fields, docs/hud.md). */
+export interface StatusMessagePayload {
+  text: string;
+  /** Portrait sprite name, or null. */
+  sprite: string | null;
+  /** Sound definition/sample to play when sent, or null. */
+  sound: string | null;
+  /** Hold time after typing finishes, seconds (default 2). */
+  durationSeconds: number;
+  /** Cut-scene subtitle (font4, no box) instead of a radio message. */
+  cutscene: boolean;
+}
+
+/** payload of GameEvent.Impact. */
+export interface ImpactPayload {
+  point: Vec3;
+  /** Unit surface normal facing the shooter. */
+  normal: Vec3;
+  /** Game material name (material.qvm DefineGameMaterial), or null when unknown. */
+  material: string | null;
+  shooter: Actor;
+  /** The bullet ricocheted off this surface (second ricochet sound attempt, 0x47a45b). */
+  ricochet?: boolean;
+  /** The surface was a human body (no decal). */
+  human?: boolean;
+}
+
+/** payload of GameEvent.Footstep. */
+export interface FootstepPayload {
+  actor: Actor;
+  position: Vec3;
+  material: string | null;
+  /** Quiet walk: volume x 0.66 (docs/audio.md). */
+  quiet: boolean;
+}
+
+/** payload of GameEvent.Land. */
+export interface LandPayload {
+  actor: Actor;
+  position: Vec3;
+  material: string | null;
+  /** The landing caused fall damage. */
+  damaged: boolean;
+  /** Fall damage / damage capacity (selects player_fall_1/2/3). */
+  damageFraction?: number;
+  /** Landing speed, m/s (FUN_00408570; the player's view dip). */
+  speed?: number;
+}
+
+/** payload of GameEvent.AnimTrigger. */
+export interface AnimTriggerPayload {
+  actor: Actor;
+  trigger: number;
+  position: Vec3;
+}
+
+/** payload of GameEvent.EnemyHit. */
+export interface EnemyHitPayload {
+  enemyId: number;
+  position: Vec3;
+  damage: number;
+  /** Damage came from an explosion. */
+  explosion: boolean;
+}

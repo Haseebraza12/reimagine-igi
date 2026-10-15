@@ -135,15 +135,10 @@ interface Instruction {
   argOffsets?: number[];
 }
 
-/**
- * Parse every top-level statement of a declarative LOOP v8 script into a
- * call tree. Throws on any opcode or layout outside the recovered grammar.
- */
-export function readQvmCallTree(buffer: ArrayBuffer): QvmCall[] {
-  const { symbols, literals, code } = readQvmFile(buffer);
+/** Instruction decoder over one script's code; throws on unknown opcodes. */
+function createDecoder({ symbols, literals, code }: QvmFile): (at: number) => Instruction {
   const view = new DataView(code.buffer, code.byteOffset, code.byteLength);
-
-  const decode = (at: number): Instruction => {
+  return (at: number): Instruction => {
     if (at < 0 || at >= code.length) fail(`instruction outside code at 0x${at.toString(16)}`);
     const op = code[at];
     const need = (n: number) => {
@@ -205,6 +200,16 @@ export function readQvmCallTree(buffer: ArrayBuffer): QvmCall[] {
         fail(`unsupported opcode 0x${op.toString(16).padStart(2, "0")} at code 0x${at.toString(16)}`);
     }
   };
+}
+
+/**
+ * Parse every top-level statement of a declarative LOOP v8 script into a
+ * call tree. Throws on any opcode or layout outside the recovered grammar.
+ */
+export function readQvmCallTree(buffer: ArrayBuffer): QvmCall[] {
+  const file = readQvmFile(buffer);
+  const { code } = file;
+  const decode = createDecoder(file);
 
   const parseCall = (at: number, terminator: number): { call: QvmCall; next: number } => {
     const name = decode(at);
@@ -276,6 +281,48 @@ export function readQvmCallTree(buffer: ArrayBuffer): QvmCall[] {
     pos = next;
   }
   fail("bytecode does not end with BRK");
+}
+
+/**
+ * For executable scripts (AI handlers), whose control flow is not decoded:
+ * every call site of each named function whose single argument is a numeric
+ * literal, as `PUSHI fn; CALL [arg]; BRA end; <literal> BRK; <POP|BRK>`.
+ * Call sites are located by their PUSHI bytes and accepted only when that
+ * whole layout decodes and the CALL table partitions the skipped region, so a
+ * stray byte match is rejected rather than misread.
+ */
+export function readQvmLiteralCalls(buffer: ArrayBuffer, names: readonly string[]): Map<string, number[]> {
+  const file = readQvmFile(buffer);
+  const { code, symbols } = file;
+  const decode = createDecoder(file);
+  const out = new Map<string, number[]>();
+  for (const name of names) {
+    const index = symbols.indexOf(name);
+    const values: number[] = [];
+    if (index >= 0 && index < 256) {
+      for (let at = code.indexOf(OP.PUSHI); at >= 0; at = code.indexOf(OP.PUSHI, at + 1)) {
+        if (code[at + 1] !== index) continue;
+        try {
+          const call = decode(at + 2);
+          if (call.op !== OP.CALL || call.argOffsets!.length !== 1) continue;
+          const braAt = at + 2 + call.size;
+          const bra = decode(braAt);
+          if (bra.op !== OP.BRA || call.argOffsets![0] !== braAt + bra.size) continue;
+          const literal = decode(call.argOffsets![0]);
+          if (typeof literal.value !== "number" || literal.isSymbol) continue;
+          const brk = call.argOffsets![0] + literal.size;
+          if (decode(brk).op !== OP.BRK || brk + 1 !== bra.target) continue;
+          const term = decode(bra.target!).op;
+          if (term !== OP.POP && term !== OP.BRK) continue;
+          values.push(literal.value);
+        } catch {
+          // Not a decodable call site at this byte offset.
+        }
+      }
+    }
+    out.set(name, values);
+  }
+  return out;
 }
 
 export function isQvmCall(value: QvmValue): value is QvmCall {

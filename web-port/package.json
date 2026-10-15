@@ -8,9 +8,10 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
+    "check": "tsc --noEmit -p .",
     "test": "vitest run",
     "test:watch": "vitest",
-    "extract": "python3 ../tools/igipy/igipy/res.py"
+    "stage": "node scripts/stage-raw.mjs"
   },
   "dependencies": {
     "three": "^0.170.0"

@@ -1,13 +1,16 @@
 /**
- * Frame clock with an optional fixed-timestep accumulator.
+ * Frame clock with the original's fixed game tick.
  *
- * The reference engine's true timing model is not yet established (docs/
- * roadmap Phase 3 notes a fixed timestep is an *initial implementation choice*
- * to be validated against the original). We therefore default to a variable
- * real-time step clamped against tab-switch spikes, and expose an accumulator
- * so gameplay can opt into a fixed step later without rewriting call sites.
- * Confidence: inferred (implementation choice, not recovered behaviour).
+ * igi.exe runs all game logic at a fixed 30 ticks per second (GAME_FREQUENCY =
+ * 30; FUN_004020b0 -> FUN_004029a0(0x1e)) and renders between ticks
+ * [recovered: docs/rendering.md, docs/qvm-vm.md]. The engine accumulates real
+ * time and runs whole ticks; rendering shows the latest tick's state.
  */
+
+/** Game logic rate of igi.exe [recovered]. */
+export const TICKS_PER_SECOND = 30;
+/** Seconds per game tick. */
+export const TICK_SECONDS = 1 / TICKS_PER_SECOND;
 
 /** Largest single-frame delta we honour (guards against background-tab jumps). */
 const MAX_DELTA_SECONDS = 0.1;
@@ -19,7 +22,7 @@ export class Clock {
   private lastMs: number | null = null;
   private accumulator = 0;
 
-  constructor(private readonly fixedStep = 1 / 60) {}
+  constructor(private readonly fixedStep = TICK_SECONDS) {}
 
   /** Reset the clock (call when the level restarts). */
   reset(): void {
