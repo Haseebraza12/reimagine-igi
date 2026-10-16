@@ -40,7 +40,7 @@ export const PLAYER_STATE = {
   crouchRight: 26, crouchLeft: 27,
   jump: 28, fall: 29,
   /** 30-36: use objects (lock pick, cabinet, terminal, stationary gun, ?, TBA, explosive; docs/interactions.md). */
-  lockPick: 30, terminal: 32,
+  lockPick: 30, cabinet: 31, terminal: 32, tba: 35, placeExplosive: 36,
   /** 37-43: ladder climb / mount top / exit top / slide, fence, wire traverse / slide (player/attach.ts). */
   ladderClimb: 37, ladderMountTop: 38, ladderExitTop: 39, ladderSlide: 40, fence: 41, wireTraverse: 42, wireSlide: 43,
   lean: 44,

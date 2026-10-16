@@ -89,6 +89,8 @@ export { GAME_TICKS_PER_SECOND } from "./render-params";
 export type { DecodedTexture, Vec3 } from "../contracts";
 // Mission task runtime (docs/mission.md).
 export * from "./mission";
+// Task types registered as behaviours (docs/objects.md): importing them registers them.
+export * from "./objects";
 // Soldier AI (docs/ai.md): walk graphs and the recovered rule functions.
 // ai-rules shares three names with gameplay-params (AiView, AiCombatConfig,
 // aiHitProbability); they are re-exported here with an "AiRules"/"aiRules" prefix.

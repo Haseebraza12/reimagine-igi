@@ -73,7 +73,10 @@ import {
   sampleClip,
   sampleTranslation,
   torsoZone,
+  touchGenericPickup,
+  type MissionRuntime,
 } from "../../loaders";
+import { stringParam, vec3Param } from "../../loaders/tasks";
 import { phaseTime } from "../ai/clip-player";
 import { BodyCollision } from "../combat/body-collision";
 import { x87Mul, x87StoreF32 } from "../../loaders/x87";
@@ -81,7 +84,9 @@ import type { GameContext } from "../context";
 import { GameEvent } from "../events";
 import {
   PLATFORM_TASK_TYPES,
+  attachHuman,
   createHumanMoveState,
+  detachHuman,
   groundBelow,
   leaveGround,
   moveHuman,
@@ -105,6 +110,10 @@ import {
   type PlayerChannels,
 } from "./movement-graph";
 import { createPickupSystem, type PickupSystem } from "../combat/pickups";
+import { STATIONARY_GUN, stationaryGunsOf } from "../combat/stationary-guns";
+
+/** combat: movement state 33, the StationaryGun (FUN_0040c970 enter, 0x40cae0 tick; table 0x5385b4 entry 0x538638, full exe). */
+const STATIONARY_GUN_STATE = 33;
 
 const U = 1 / 4096;
 const TICKS_PER_SECOND = 30;
@@ -253,8 +262,6 @@ export interface PlayerControllerOptions {
   interactions?: InteractionOptions;
 }
 
-/** Body clips the use states play directly (FUN_004882c0, not the slot table): 30 lock pick 0x59, 32 terminal 0x5a [recovered]. */
-const USE_CLIPS = { lockPick: 0x59, terminal: 0x5a } as const;
 
 /** Head-front zone radius around skeleton bone 4: 614.4 units (0x532220). */
 const HEAD_FRONT_RADIUS_M = 614.4 * U;
@@ -650,6 +657,7 @@ export function createPlayerController(ctx: GameContext, options: PlayerControll
     bodyFinished = false;
     lastRoot = [0, 0, 0];
     lastCh = NO_CHANNELS;
+    detachHuman(mv);
     interactions.reset();
     pickups.reset();
     const b = ensureBody();
@@ -728,6 +736,24 @@ export function createPlayerController(ctx: GameContext, options: PlayerControll
   /** FUN_00410f10, after the move: the pickups the player touches (alive only). */
   function touchPickups(): void {
     pickups.update(ctx.player.alive ? ([...mv.position] as Vec3) : null);
+    if (ctx.player.alive) touchGenericPickups();
+  }
+
+  /**
+   * The pickup loop's GenericPickups (FUN_00410f70 -> FUN_0046c630, full exe; docs/objects.md):
+   * every one, in or out of the world, with the player's pelvis (+0x20), only while alive.
+   */
+  function touchGenericPickups(): void {
+    const rt = (ctx.systems.tasks as unknown as { runtime?: MissionRuntime | null } | null)?.runtime ?? null;
+    if (!rt) return;
+    const pelvis = engineToIgi(ctx.level, mv.position);
+    for (const node of rt.tasks.nodes) {
+      if (node.type !== "GenericPickup") continue;
+      const position = vec3Param(node.task, "Position");
+      if (!position || rt.behaviourState(node.index).isPickedUp) continue;
+      const model = stringParam(node.task, "Model");
+      touchGenericPickup(rt, node.index, position, pelvis, (model ? interactions.modelRadius(model) : null) ?? 0);
+    }
   }
 
   /** Mount / stance placement: the pelvis at an IGI point, facing `heading`. */
@@ -802,6 +828,84 @@ export function createPlayerController(ctx: GameContext, options: PlayerControll
     return true;
   }
 
+  // --- state 33: the StationaryGun (combat) ------------------------------------------------
+
+  /**
+   * FUN_0040c970 [recovered, full exe]: the use point P (origin + object x magic 0) and the
+   * object matrix M (FUN_00444b30); M turned by pi when the human is in front; x, y = P + col1(M)
+   * x 0.7 m, z kept; heading gamma(M) + pi; arms mode 0, the weapon holstered (FUN_0040c140), body
+   * clip 198 (FUN_00489ea0, no loop, no blend), the view locked, attached to the gun (FUN_00463310:
+   * the platform carry, E100), weapon inactive. The gun takes the player as its user.
+   */
+  function mountStationaryGun(node: number, b: BodyAnimator | null): boolean {
+    const guns = stationaryGunsOf(ctx);
+    const world = ctx.world;
+    const human = engineToIgi(ctx.level, mv.position);
+    const m = guns && world ? guns.mountPlayer(node, human) : null;
+    if (!m || !world) {
+      interactions.release();
+      return false;
+    }
+    const e = igiToEngine(ctx.level, [m.x, m.y, human[2]]);
+    mv.position = [e[0], mv.position[1], e[2]];
+    mv.air = [0, 0, 0];
+    mv.knock = [0, 0, 0];
+    mv.slide = [0, 0, 0];
+    ctx.player.yaw = m.heading;
+    ctx.player.pitch = 0;
+    armsMode = 0;
+    prevState = state;
+    state = STATIONARY_GUN_STATE;
+    b?.start(STATIONARY_GUN.playerClip, false, 0);
+    leaveGround(mv);
+    attachHuman(world, mv, node);
+    lastRoot = [0, 0, 0];
+    publish();
+    ctx.player.velocity = [0, 0, 0];
+    return true;
+  }
+
+  /** FUN_00475340 (release) + FUN_00462190 (detach) + FUN_00462260 (the use released, Activate latched). */
+  function leaveStationaryGun(): void {
+    stationaryGunsOf(ctx)?.releasePlayer();
+    detachHuman(mv);
+    interactions.release();
+  }
+
+  /**
+   * 0x40cae0 [recovered]: a fresh Activate press (channel 9 now, not on the previous tick) or death
+   * leaves: weapon active, unholstered (FUN_0040c2d0), the gun released, detached, state 0 at once (the
+   * player stays where he stood). Otherwise the body plays its clip, attached to the gun (FUN_00461930:
+   * the gun's yaw carries it, FUN_0045fd00 turns the heading with it). Returns false when it left.
+   */
+  function stationaryGunTick(activatePressed: boolean, b: BodyAnimator | null): boolean {
+    const world = ctx.world!;
+    if (activatePressed || !ctx.player.alive) {
+      leaveStationaryGun();
+      transition(PLAYER_STATE.stand);
+      return false;
+    }
+    const p = ctx.player;
+    const rootDelta: Vec3 = [0, 0, 0];
+    if (b) {
+      const step = b.step();
+      bodyFinished = step.finished;
+      rootHeight = step.rootZ * U;
+      const k = motion().rootScale * U;
+      const sinY = Math.sin(p.yaw);
+      const cosY = Math.cos(p.yaw);
+      rootDelta[0] = cosY * step.delta[0] * k - sinY * step.delta[1] * k;
+      rootDelta[1] = step.delta[2] * k;
+      rootDelta[2] = -sinY * step.delta[0] * k - cosY * step.delta[1] * k;
+    }
+    moveHuman(world, mv, rootDelta, rootHeight, ctx.playArea ?? undefined, platforms());
+    lastRoot = rootDelta;
+    publish();
+    p.pitch = 0;
+    p.eyeHeight = rootHeight + EYE_ABOVE_PELVIS.standing;
+    return true;
+  }
+
   // --- state 47: dead ---------------------------------------------------------------------
 
   /**
@@ -833,6 +937,7 @@ export function createPlayerController(ctx: GameContext, options: PlayerControll
     const world = ctx.world!;
     const p = ctx.player;
     if (state !== PLAYER_STATE.dead) {
+      if (interactions.busy === "gun") leaveStationaryGun(); // 0x40cae0: death (graph flag 0x20000) releases the gun
       if (interactions.busy) {
         interactions.attach.reset();
         interactions.release();
@@ -912,6 +1017,8 @@ export function createPlayerController(ctx: GameContext, options: PlayerControll
     }
     // FUN_0045f930, before the use search and the state graph: the motion of the attach or ground task
     // since the last tick; FUN_0045fd00 adds its yaw to the heading even while the yaw input is locked.
+    const ride = mv.attach?.body ?? (mv.grounded ? mv.platform?.body : undefined);
+    if (ride !== undefined) (ctx.systems.tasks as unknown as { prepareRide?(node: number): void } | null)?.prepareRide?.(ride);
     updatePlatform(world, mv, platforms());
     p.yaw += mv.platformYaw;
 
@@ -925,30 +1032,51 @@ export function createPlayerController(ctx: GameContext, options: PlayerControll
     let graphDone = false;
     // FUN_0045fb20: the use target, only grounded and not in use (+0x7b8, the lean sets it too).
     interactions.search(mv.grounded && !airborne() && !leanInUse);
-    if (interactions.busy === "hacking" || interactions.busy === "picking") {
-      const useState = interactions.busy === "hacking" ? PLAYER_STATE.terminal : PLAYER_STATE.lockPick;
+    if (interactions.useState !== null) {
+      const useState = interactions.useState;
       if (state !== useState) {
         // A use started without a stance placement (lock picking): its enter's clip.
         prevState = state;
         state = useState;
-        b?.start(useState === PLAYER_STATE.lockPick ? USE_CLIPS.lockPick : USE_CLIPS.terminal, true, 0);
+        const clip = interactions.useClip;
+        if (clip) b?.start(clip.id, clip.loop, clip.blend);
       }
-      // FUN_0040c980 / FUN_0040c260: the body stays at its stance while Activate is held.
-      if (interactions.tickTimedUse({ held: cur.activate, dead: !p.alive, pelvis: engineToIgi(ctx.level, mv.position) })) {
-        // The use clip advances (pose only: the stance does not move).
-        if (b) bodyFinished = b.step().finished;
+      // FUN_0040c980 / FUN_0040c260 / LAB_0040c510 / LAB_0040d580: the body stays at its stance while Activate is held.
+      const going = interactions.tickTimedUse({
+        held: cur.activate, dead: !p.alive, pelvis: engineToIgi(ctx.level, mv.position), clipFinished: bodyFinished,
+        play: (clip) => b?.start(clip.id, clip.loop, clip.blend),
+      });
+      if (going) {
+        // The use clip advances (pose only: the stance does not move); its first event is human+0x538
+        // (the cabinet's drawer triggers 0 / 1), sound triggers (the cabinet's 1051) play on the body.
+        if (b) {
+          const step = b.step();
+          bodyFinished = step.finished;
+          interactions.setTrigger(step.triggers[0] ?? -1);
+          for (const t of step.triggers) {
+            if (t >= 1000 && t !== FOOTSTEP_TRIGGER) ctx.events.emit(GameEvent.AnimTrigger, { actor: "player", trigger: t, position: [...p.position] as Vec3 });
+          }
+        }
         lockView();
         mv.moved = [0, 0, 0];
         publish();
         touchPickups();
         return;
       }
+      interactions.setTrigger(-1);
       // The use ended in its state tick: state 0.
       transition(PLAYER_STATE.stand);
       graphDone = true;
     }
     if (interactions.attach.attached) {
       if (attachedTick(cur.forward, cur.back, activatePressed, b)) {
+        touchPickups();
+        return;
+      }
+      graphDone = true;
+    }
+    if (interactions.busy === "gun") {
+      if (stationaryGunTick(activatePressed, b)) {
         touchPickups();
         return;
       }
@@ -963,6 +1091,12 @@ export function createPlayerController(ctx: GameContext, options: PlayerControll
       blocked: !upperIdle || !!weaponMachine?.binocularMode || ctx.input.action("Fire") || ctx.input.action("AlternateFire") || !!ctx.weapon?.reloading,
       pelvis: engineToIgi(ctx.level, mv.position),
     });
+    if (used && used.object.kind === "stationaryGun") {
+      if (mountStationaryGun(used.object.nodeIndex, b)) {
+        touchPickups();
+        return;
+      }
+    }
     if (used && interactions.attach.attached) {
       // FUN_00411380 / FUN_00411710 / FUN_00411a80 / FUN_00411ec0 placed the body.
       const clip = interactions.attach.clip;
@@ -977,11 +1111,17 @@ export function createPlayerController(ctx: GameContext, options: PlayerControll
       return;
     }
     if (used && interactions.stance) {
-      // FUN_0040c780: the stance in front of the terminal, then FUN_00461ea0 stands it on the ground below.
+      // FUN_0040c780 / FUN_0040c2f0 / FUN_0040cf70 / FUN_0040d180: the stance in front of the object,
+      // then FUN_00461ea0 / FUN_00463260 stand it on the ground below.
       prevState = state;
-      state = interactions.busy === "picking" ? PLAYER_STATE.lockPick : PLAYER_STATE.terminal;
-      // FUN_0040bfe0 / FUN_0040c780: FUN_004882c0(human, 89 picklock / 90 typecomp, loop, blend 0).
-      b?.start(state === PLAYER_STATE.lockPick ? USE_CLIPS.lockPick : USE_CLIPS.terminal, true, 0);
+      state = interactions.useState ?? PLAYER_STATE.terminal;
+      // The TBA states clear the low-profile flag +0x33d.
+      if (state === PLAYER_STATE.tba || state === PLAYER_STATE.placeExplosive) setCrouched(false);
+      // FUN_004882c0 / FUN_00489ea0: 89 picklock / 90 typecomp looped, 84 (cabinet) once, the Activate Anim looped; no blend.
+      const clip = interactions.useClip;
+      if (clip) b?.start(clip.id, clip.loop, clip.blend);
+      bodyFinished = false;
+      interactions.setTrigger(-1);
       placePelvis(interactions.stance.position, interactions.stance.heading, rootHeight);
       const hit = groundBelow(world, [mv.position[0], mv.position[1] - rootHeight, mv.position[2]]);
       if (hit) mv.position = [mv.position[0], hit.point[1] + rootHeight, mv.position[2]];

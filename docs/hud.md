@@ -1018,8 +1018,14 @@ LEFT / RIGHT / RETURN reach widgets through their selectable MenuFrame.
 Project IGI" (900, text key "Single Player") opens DialogWindow 936 at the
 Quit dialog's place and size (197, 234, 256 × 133) with "Story Mode", "Free
 Mode" and "Cancel". Both modes run `Game_SetPlayMode(n)`, close the dialog and
-push the original Select Mission screen 914. Story Mode lists the missions up
-to the profile's progress (as igi.exe); Free Mode lists every staged mission.
+push the original Select Mission screen 914. Story Mode lists the installed
+missions up to the profile's progress (as igi.exe); Free Mode lists every
+mission the game names (missions.res "Mission N Name" / "Desc" for N = 1..14,
+missionsprites.res "missionN.spr"), installed or not. Select Mission's OK and
+the list's double click are wrapped as `Game_IsMissionInstalled(id) ? (start)
+: MenuManager_ActivatePopupScreen(937)`; dialog 937 ("Mission Not Installed",
+Quit dialog geometry) explains that the files are missing, and the click that
+would start play does not capture the mouse for such a mission.
 Finishing a mission in Story Mode makes its DefineMission "next mission"
 playable [inferred: the exe's progress update was not traced]; Free Mode
 leaves the progress alone.

@@ -353,9 +353,32 @@ registered by `FUN_004ffe00`), +0x134 graph, +0x138 material, +0x13c up to
 64 link pointers.
 
 **World position** (`FUN_004f0340`): graph position (the AIGraph task's
-"Graph position") + node position. A graph flagged as attached is also
-transformed by its parent object [recovered]; which flag setter applies
-to the Heli / Train / Car graphs was not traced [inferred: those].
+"Graph position", graph+0x20) + node position. A graph flagged as attached
+(graph+100) is then turned by its parent object's matrix (+0x70) and moved
+to the parent's position (+0x20) [recovered]. The flag is set at create
+(`FUN_004efc80`, again at compile `FUN_004efd50`) when the parent task's
+class derives from RigidDynCubeObj (`FUN_00401d30(parent class,
+FUN_004baae0())`) [recovered]. That holds for Building (SectorObject),
+EditRigidObj (SectorInteriorObject), Elevator, StationaryGun and the
+vehicles (Heli / Train / Plane > Vehicle > PhysicsObject); Car is inferred
+to be a Vehicle. It does not hold for Container, ConditionalContainer,
+Static or Dynamic. The node square of an attached graph is turned the same
+way: `FUN_004f0470` gives R = Rz(gamma) · P, and `FUN_004f0610` tests
+R^T (dx, dy, 0).
+
+**Soldiers on an attached graph**: the human update's AI branch
+(`FUN_00460fd0`) attaches the soldier to the graph's parent object
+(`FUN_00461f50`, at its placed position). From then on `FUN_00461930`
+moves it rigidly in that object's frame by root motion only (no sweep,
+ground probe, gravity or graph height). This covers vehicle riders, the
+soldiers on elevators (L11 #88, L12 #1667), and the scripted characters
+seated in buildings, for example Anya at her desk in the L14 intro: her
+graph 36 is a one-node graph under Building_-1 and its "Graph position" is
+an offset from the building [recovered]. Port:
+`loaders/ai-graph.ts` (AiGraphPosition with its parent),
+`engine/ai/data.ts` (GRAPH_ATTACHING_TYPES), and `engine/combat/enemy.ts`
+riderBody (a static parent: STATIC_ATTACH; a moving parent: its body,
+whose pose is refreshed before the soldier's node).
 
 **Which graph a soldier uses**: the HumanAI "Graph ID" names the AIGraph
 task and the file `graph<id>.dat` (`FUN_0044f3a0` → `FUN_004efe60`). The

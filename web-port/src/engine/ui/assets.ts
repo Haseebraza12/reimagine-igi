@@ -62,6 +62,16 @@ export interface MissionInfo {
  */
 export const MISSION_MANIFEST = "missions.json";
 
+/** A mission of the game's own list (missions.res "Mission N Name" / "Desc", missionsprites.res "missionN.spr"). */
+export interface CatalogueMission {
+  id: number;
+  name: string;
+  description: string;
+  sprite: string;
+  /** Its files are staged (a DefineMission was read for it). */
+  installed: boolean;
+}
+
 export interface UiAssets {
   status: UiArchive;
   computer: UiArchive;
@@ -69,6 +79,8 @@ export interface UiAssets {
   main: UiArchive;
   loading: UiArchive;
   missionSprites: UiArchive;
+  /** Every mission the game names (1..14), installed or not: Free Mode lists them all. */
+  missionCatalogue: CatalogueMission[];
   /** common/sprites/sprites.res (binocular / sniper overlays); empty when unreadable. */
   commonSprites: UiArchive;
   /** Language strings keyed by lower-case key. */
@@ -276,7 +288,8 @@ export async function loadUiAssets(source: IAssetSource): Promise<UiAssets> {
   }
   for (const [k, v] of messages) if (!computerStrings.has(k)) computerStrings.set(k, v);
   const missions = await readMissions(source, missionStrings, parse);
-  return { status, computer, ingame, main, loading, missionSprites, commonSprites, menuStrings, messages, missionStrings, weapons, mainMenu, ingameMenu, missions, computerStrings };
+  const missionCatalogue = readMissionCatalogue(missionStrings, missions, (name) => missionSprites.sprites.has(name));
+  return { status, computer, ingame, main, loading, missionSprites, missionCatalogue, commonSprites, menuStrings, messages, missionStrings, weapons, mainMenu, ingameMenu, missions, computerStrings };
 }
 
 /** The staged missions (MISSION_MANIFEST), by mission number; mission 1 alone without a manifest. */
@@ -314,4 +327,31 @@ async function readMissions(
     }
   }
   return [...byId.values()].sort((a, b) => a.id - b.id);
+}
+
+/**
+ * The game's mission list: "Mission N Name" for N = 1, 2, ... while missions.res has it, with its
+ * description and picture; an installed mission keeps its DefineMission name / description / sprite.
+ */
+export function readMissionCatalogue(
+  strings: Map<string, string>,
+  installed: readonly MissionInfo[],
+  hasSprite: (name: string) => boolean,
+): CatalogueMission[] {
+  const out: CatalogueMission[] = [];
+  const byId = new Map(installed.map((m) => [m.id, m]));
+  for (let n = 1; strings.has(`mission ${n} name`); n++) {
+    const m = byId.get(n);
+    const sprite = m?.sprite ?? `mission${n}.spr`;
+    out.push({
+      id: n,
+      name: m?.name ?? strings.get(`mission ${n} name`)!,
+      description: m?.description ?? strings.get(`mission ${n} desc`) ?? "",
+      sprite: hasSprite(sprite) ? sprite : m?.sprite ?? sprite,
+      installed: Boolean(m),
+    });
+  }
+  // A staged mission beyond the names in missions.res still appears.
+  for (const m of installed) if (!out.some((c) => c.id === m.id)) out.push({ id: m.id, name: m.name, description: m.description, sprite: m.sprite, installed: true });
+  return out.sort((a, b) => a.id - b.id);
 }

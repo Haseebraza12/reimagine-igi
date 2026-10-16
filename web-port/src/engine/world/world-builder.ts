@@ -42,7 +42,7 @@
  *   them; a per-block mesh would be exact but cost ~1000 draw calls].
  */
 import * as THREE from "three";
-import { decodeLevelTexture, type IgiLevel, type LevelInstance, type LevelModel } from "../../loaders";
+import { EXPLODE_OBJECT_TYPES, decodeLevelTexture, type IgiLevel, type LevelInstance, type LevelModel } from "../../loaders";
 import type { DecodedTexture } from "../../contracts";
 import { CollisionWorldBuilder, TRI_BULLET, TRI_SIGHT, TRI_SOLID, type CollisionWorld } from "./collision";
 import { buildLightmapAtlas, type AtlasRect } from "./lightmap-atlas";
@@ -108,8 +108,14 @@ export interface BuiltWorld {
    * state. Returns false when `i` is not destructible.
    */
   setInstanceModel(i: number, model: LevelModel | null): boolean;
-  /** Undo every setInstanceModel (mission restart). */
+  /** Undo every setInstanceModel and setInstanceHidden (mission restart). */
   resetInstanceModels(): void;
+  /**
+   * Stop drawing placed instance `i` (all its render copies) without touching its
+   * collision, or draw it again: an object that is still in the world but whose
+   * draw method skips it (the AlarmLightReflector of a destroyed lamp, FUN_00439ec0).
+   */
+  setInstanceHidden(i: number, hidden: boolean): void;
   /**
    * Current model -> world matrix (column-major, engine space) of placed
    * instance `i`: its placement times its dynamic task's current transform.
@@ -145,12 +151,13 @@ export function taskNodeOfKey(key: number): number {
 }
 
 /** Task types whose root model can be destroyed (docs/damage.md). */
-const DESTRUCTIBLE_ROOT_TASKS = new Set(["ExplodeObject", "Terminal", "AlarmControl", "SCameraControl", "Switch"]);
+const DESTRUCTIBLE_ROOT_TASKS = new Set([...EXPLODE_OBJECT_TYPES, "Switch", "AlarmLight"]);
 
 /** Is placed instance `instance` destructible (removable / swappable at run time)? */
 export function isDestructibleInstance(instance: LevelInstance): boolean {
   if (instance.glass || instance.magicType === "TASKTYPE_EXPLODEMAGICOBJ") return true;
   if (instance.part === "scameraLens") return true; // "Camera Destroyed Model" swap (0x440bc3)
+  if (instance.taskType === "Car") return true; // the exploded car: root -> wreck model, parts removed (world/vehicles.ts)
   return (instance.attachmentPath ?? "") === "" && instance.part === undefined && DESTRUCTIBLE_ROOT_TASKS.has(instance.taskType);
 }
 
@@ -222,6 +229,8 @@ interface LodInstance {
   hidden: boolean;
   /** Removed or swapped by setInstanceModel (independent of the task's hidden state). */
   removed: boolean;
+  /** Not drawn (setInstanceHidden); its collision stays. */
+  veiled: boolean;
   /** Dynamic task key, or -1 for static entries. */
   key: number;
   centre: THREE.Vector3;
@@ -463,6 +472,7 @@ export function buildWorld(level: IgiLevel, extra?: (builder: CollisionWorldBuil
     lodInstances.push({
       hidden: false,
       removed: false,
+      veiled: false,
       key: keyOf(instance),
       centre,
       buildCentre: centre.clone(),
@@ -619,7 +629,7 @@ export function buildWorld(level: IgiLevel, extra?: (builder: CollisionWorldBuil
     const detail = options.detail ?? renderDetail.modelLodScale;
     for (const inst of lodInstances) {
       const depth = d.subVectors(inst.centre, camPos).dot(forward);
-      const lod = inst.hidden || inst.removed ? -1 : chooseLod(inst.input, depth, tanX, settings, detail);
+      const lod = inst.hidden || inst.removed || inst.veiled ? -1 : chooseLod(inst.input, depth, tanX, settings, detail);
       if (lod === inst.current) continue;
       setVariant(inst, inst.current, false);
       setVariant(inst, lod, true);
@@ -828,6 +838,13 @@ export function buildWorld(level: IgiLevel, extra?: (builder: CollisionWorldBuil
       }
       swaps.clear();
       for (const id of bodies) rebuildBody(id);
+      for (const inst of lodInstances) inst.veiled = false;
+    },
+    setInstanceHidden(i, hidden) {
+      for (const r of renderIndexOf[i] ?? []) {
+        const inst = lodInstances[r];
+        if (inst) inst.veiled = hidden;
+      }
     },
     instanceWorldMatrix(i) {
       const instance = level.instances[i];

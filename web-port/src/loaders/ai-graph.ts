@@ -126,7 +126,7 @@ export function readAiGraph(buffer: ArrayBuffer): AiGraph {
   const view = new DataView(buffer);
   const bytes = new Uint8Array(buffer);
   if (buffer.byteLength < 4) fail("file shorter than the magic");
-  if (view.getUint32(0, true) !== AI_GRAPH_MAGIC) fail(`bad magic at 0x0`);
+  if (view.getUint32(0, true) !== AI_GRAPH_MAGIC) return readLegacyAiGraph(buffer);
 
   let maxNodes = -1;
   let routeOffset = -1;
@@ -243,7 +243,89 @@ export function readAiGraph(buffer: ArrayBuffer): AiGraph {
   }
   if (node || link) fail("file ends inside a node or link record");
   if (maxNodes < 0 || routeOffset < 0) fail("missing nMaxNodes or RouteTable");
+  return finishAiGraph(view, maxNodes, nodes, links, routeOffset);
+}
 
+/**
+ * The older, untagged graph file (no magic; 7 of mission 8's 33 graphs).
+ * [recovered, full exe: FUN_004f9ff0 rewinds a file whose first u32 is not
+ * the magic and calls FUN_004fa160; the AIGraph class handlers FUN_00509480
+ * (node added) and FUN_00509450 (graph loaded) are registered by 0x509081 /
+ * 0x509067] Every value is a type byte and its payload (5 = i32, 6 = f32,
+ * 8 = 3 x f64, 9 = u8 length + text):
+ *   nNodes, nMaxNodes, nLinks;
+ *   per node: id, position, gamma, radius, [f32, read when the next type is
+ *   6 and discarded], [material, read when the next type is 5; otherwise the
+ *   previous node's], criteria; then (node added, only when the node was
+ *   created) i32 n + n pairs and i32 m + m pairs, read and discarded;
+ *   per link: id1, id2, type;
+ *   (graph loaded) 2 bytes, i32 length, then nMaxNodes^2 x {i32 next, f32 cost}.
+ * [observed: all 7 parse to EOF]
+ */
+function readLegacyAiGraph(buffer: ArrayBuffer): AiGraph {
+  const view = new DataView(buffer);
+  const bytes = new Uint8Array(buffer);
+  let pos = 0;
+  const need = (n: number, what: string) => {
+    if (pos + n > buffer.byteLength) fail(`legacy ${what} at 0x${pos.toString(16)} runs past EOF`);
+  };
+  const i32 = (what: string) => {
+    need(5, what);
+    const v = view.getInt32(pos + 1, true);
+    pos += 5;
+    return v;
+  };
+  const f32 = (what: string) => {
+    need(5, what);
+    const v = view.getFloat32(pos + 1, true);
+    pos += 5;
+    return v;
+  };
+  const peek = () => (pos < buffer.byteLength ? bytes[pos] : -1);
+  const nNodes = i32("node count");
+  let maxNodes = i32("nMaxNodes");
+  const nLinks = i32("link count");
+  if (maxNodes < 1 || maxNodes > 1000) fail(`legacy nMaxNodes ${maxNodes} out of range`);
+  const nodes: AiGraphNode[] = [];
+  let material = 0;
+  for (let k = 0; k < nNodes; k++) {
+    const id = i32("nNodeID");
+    need(25, "position");
+    const position: [number, number, number] = [view.getFloat64(pos + 1, true), view.getFloat64(pos + 9, true), view.getFloat64(pos + 17, true)];
+    pos += 25;
+    const gamma = f32("gamma");
+    const radius = f32("radius");
+    if (peek() === 6) f32("unused f32");
+    let m = -1;
+    if (peek() === 5) m = i32("material");
+    if (m !== -1) material = m;
+    need(2, "criteria");
+    const n = bytes[pos + 1];
+    pos += 2;
+    need(n, "criteria");
+    let criteria = "";
+    for (let i = 0; i < n && bytes[pos + i] !== 0; i++) criteria += String.fromCharCode(bytes[pos + i]);
+    pos += n;
+    if (id > 999) continue; // FUN_004f9510 creates nothing, so the handler reads nothing
+    if (id >= maxNodes) maxNodes = id + 1; // FUN_004f9620 grows the graph
+    nodes.push({ id, position, gamma, radius, material, criteria, flags: aiNodeCriteriaFlags(criteria), neighbours: [] });
+    for (let pairs = 0; pairs < 2; pairs++) {
+      const count = i32("node extra count");
+      for (let i = 0; i < count; i++) {
+        i32("node extra");
+        i32("node extra");
+      }
+    }
+  }
+  const links: AiGraphLink[] = [];
+  for (let k = 0; k < nLinks; k++) links.push({ a: i32("nLinkID1"), b: i32("nLinkID2"), type: i32("eLinkType") });
+  need(7, "RouteTable header");
+  pos += 7; // FUN_004fa9d0 skips the header and its length and reads nMaxNodes^2 x 8 bytes
+  need(maxNodes * maxNodes * 8, "RouteTable");
+  return finishAiGraph(view, maxNodes, nodes, links, pos);
+}
+
+function finishAiGraph(view: DataView, maxNodes: number, nodes: AiGraphNode[], links: AiGraphLink[], routeOffset: number): AiGraph {
   const nodeById = new Map<number, AiGraphNode>();
   for (const n of nodes) {
     if (n.id < 0 || n.id >= maxNodes || n.id >= 1000) fail(`node id ${n.id} outside [0, ${maxNodes})`);
@@ -297,21 +379,59 @@ export function aiGraphPath(graph: AiGraph, from: number, to: number): number[] 
 
 type Vec3 = readonly [number, number, number];
 
-/** FUN_004f0340 for a static graph: graph position + node position (IGI units). */
-export function aiGraphNodeWorld(node: AiGraphNode, graphPosition: Vec3): [number, number, number] {
-  return [node.position[0] + graphPosition[0], node.position[1] + graphPosition[1], node.position[2] + graphPosition[2]];
+/**
+ * The parent object of an attached graph and its current pose (IGI units; `matrix` row-major,
+ * world = M v). A graph is attached when its parent task's class derives from RigidDynCubeObj
+ * (create FUN_004efc80 / compile FUN_004efd50: FUN_00401d30(parent class, FUN_004baae0()) sets
+ * graph+100, parent = graph+0x14) [recovered]: Building (SectorObject), EditRigidObj
+ * (SectorInteriorObject), Elevator, the vehicles (Vehicle > PhysicsObject); not Container,
+ * ConditionalContainer, Static or Dynamic.
+ */
+export interface AiGraphParent {
+  /** Task node index of the parent. */
+  node: number;
+  position: [number, number, number];
+  matrix: number[];
+}
+
+/** "Graph position" (graph+0x20), with the parent object when the graph is attached. */
+export type AiGraphPosition = Vec3 & { readonly parent?: AiGraphParent | null };
+
+/** A graph position (optionally attached to `parent`). */
+export function aiGraphPosition(position: Vec3, parent: AiGraphParent | null = null): AiGraphPosition {
+  return Object.assign([position[0], position[1], position[2]] as [number, number, number], { parent });
+}
+
+/**
+ * FUN_004f0340: world position of a node = node + graph position; for an attached graph that sum
+ * is then turned by the parent's matrix (+0x70) and moved to the parent's position (+0x20)
+ * [recovered].
+ */
+export function aiGraphNodeWorld(node: AiGraphNode, graphPosition: AiGraphPosition): [number, number, number] {
+  const x = node.position[0] + graphPosition[0];
+  const y = node.position[1] + graphPosition[1];
+  const z = node.position[2] + graphPosition[2];
+  const p = graphPosition.parent;
+  if (!p) return [x, y, z];
+  const m = p.matrix;
+  return [
+    m[0] * x + m[1] * y + m[2] * z + p.position[0],
+    m[3] * x + m[4] * y + m[5] * z + p.position[1],
+    m[6] * x + m[7] * y + m[8] * z + p.position[2],
+  ];
 }
 
 /**
  * FUN_004f0610: is `point` on the node? The node is a square of half-size
- * (radius + marginMetres) * 4096, rotated by gamma (FUN_004a9ec0: local =
- * R(gamma)^T * d). With checkHeight, |dz| must also be <= 4096 (1 m).
+ * (radius + marginMetres) * 4096 in the frame R = Rz(gamma) (FUN_004a9ec0),
+ * times the parent's matrix for an attached graph (FUN_004f0470: Rz(gamma) . P);
+ * local = R^T (dx, dy, 0). With checkHeight, |dz| must also be <= 4096 (1 m).
  * The exe uses marginMetres 0.3 for "standing on a node" tests and 0 for
  * the roll-room test.
  */
 export function aiGraphNodeContains(
   node: AiGraphNode,
-  graphPosition: Vec3,
+  graphPosition: AiGraphPosition,
   point: Vec3,
   marginMetres: number,
   checkHeight: boolean,
@@ -321,11 +441,17 @@ export function aiGraphNodeContains(
   const dy = point[1] - w[1];
   const dz = point[2] - w[2];
   if (checkHeight && Math.abs(dz) > 4096) return false;
-  if (dx === 0 && dy === 0 && dz === 0) return false; // FUN_004a9600 zero-vector early-out
+  if (dx === 0 && dy === 0) return false; // FUN_004a9600 zero-vector early-out on (dx, dy, 0)
   const c = Math.cos(node.gamma);
   const s = Math.sin(node.gamma);
-  const lx = c * dx + s * dy;
-  const ly = -s * dx + c * dy;
+  let r = [c, -s, 0, s, c, 0, 0, 0, 1];
+  const p = graphPosition.parent;
+  if (p) {
+    const m = p.matrix;
+    r = [0, 1, 2].flatMap((i) => [0, 1, 2].map((j) => r[i * 3] * m[j] + r[i * 3 + 1] * m[3 + j] + r[i * 3 + 2] * m[6 + j]));
+  }
+  const lx = r[0] * dx + r[3] * dy;
+  const ly = r[1] * dx + r[4] * dy;
   const half = (node.radius + marginMetres) * 4096;
   return lx >= -half && lx <= half && ly >= -half && ly <= half;
 }
@@ -337,7 +463,7 @@ export function aiGraphNodeContains(
  */
 export function aiGraphClosestNode(
   graph: AiGraph,
-  graphPosition: Vec3,
+  graphPosition: AiGraphPosition,
   point: Vec3,
 ): { node: AiGraphNode; distance: number; inside: boolean } | null {
   let best: AiGraphNode | null = null;
@@ -400,7 +526,7 @@ export function aiGraphLegPoint(
  */
 export function aiGraphWaypoints(
   graph: AiGraph,
-  graphPosition: Vec3,
+  graphPosition: AiGraphPosition,
   from: number,
   to: number,
   onFrom: boolean,

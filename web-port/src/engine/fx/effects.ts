@@ -61,6 +61,7 @@ import { createMuzzleFlash, resetMuzzleFlashRng, type MuzzleFlash } from "./muzz
 import { createParticleManager, type ParticleHit, type ParticleManager, type ParticleSystem } from "./particles";
 import { createTracerSystem, type TracerSystem } from "./tracers";
 import { ALARM_LIGHT_SPRITE, createAlarmLightRenderer, type AlarmLightQuad, type AlarmLightRenderer } from "./alarm-lights";
+import { worldTasksOf } from "../world/world-tasks";
 
 export type { BulletReport, BulletHitReport, BulletSegmentReport } from "./bullet-effects";
 
@@ -224,7 +225,10 @@ export function createEffects(ctx: GameContext): Effects {
       if (alarmLights) {
         // LAB_00441c50: each lens draws its light with the current camera (every render of the world).
         const tasks = ctx.systems.tasks as unknown as { securityCameraLights?(): AlarmLightQuad[] } | null;
-        alarmLights.draw(camera, tasks?.securityCameraLights?.() ?? []);
+        // The AlarmLight reflectors' glows (FUN_00439f10) share the sprite and the pipeline.
+        const glows = worldTasksOf(ctx)?.alarmLightGlows() ?? [];
+        const lights = tasks?.securityCameraLights?.() ?? [];
+        alarmLights.draw(camera, glows.length > 0 ? [...lights, ...glows] : lights);
       }
       decals?.sync((id) => ctx.world?.bodyMatrix(id) ?? null);
     });

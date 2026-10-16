@@ -575,12 +575,13 @@ export async function loadIgiAudio(raw: IAssetSource, options: LoadIgiAudioOptio
   if (missionQvm) definitions.push(...readSoundDefinitions(missionQvm, "mission"));
   await yieldToEventLoop();
 
-  // Mission directory: the listed files, plus any sample key a mission
-  // definition names that the list lacks (read tolerantly: other missions'
-  // names are simply absent).
+  // Mission directory: the listed files. igi.exe loads the whole directory and
+  // nothing else, so with a listing a definition naming an absent sample stays
+  // silent (missions 2, 8 and 14 name files their directories lack). Without a
+  // listing, the sample keys the mission definitions name are tried instead.
   const listed = new Set(paths.missionSoundFiles.map((f) => ilsfSampleKey(f)));
   const extraFiles: Array<{ file: string; required: boolean }> = [];
-  for (const d of definitions) {
+  for (const d of paths.missionSoundFiles.length > 0 ? [] : definitions) {
     if (d.kind === "group" || d.origin !== "mission" || !d.sample) continue;
     const key = ilsfSampleKey(d.sample);
     if (listed.has(key)) continue;

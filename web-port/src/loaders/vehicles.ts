@@ -117,6 +117,36 @@ export function eulerF(alpha: number, beta: number, gamma: number): Mat3 {
   return matMulF(matMulF(rotZ(f32(gamma)), rotY(f32(beta))), rotX(f32(alpha)));
 }
 
+/**
+ * The rotation an attached child gets from its ATTA record (FUN_004c4950,
+ * full exe, the create of every ATTA child) [recovered]: with a = column 0
+ * and b = column 1 of the stored 3x3 (the row-vector matrix of
+ * docs/formats.md), c = a x b, the child matrix (column form, world = P M)
+ * has rows (unit a, unit(c x a), unit(unit a x (c x a))). For a proper
+ * rotation this is the transpose of the stored matrix (the reading
+ * loaders/level.ts used); a mirroring record (det -1: 8 of the 2,120 ATTA
+ * records of the full game, the SU-27's left gear 702_15_1 and left taileron
+ * 702_14_1 and six parts of 617_01_1 [observed]) becomes the proper rotation
+ * that keeps a and b (diag(-1, 1, 1) -> diag(-1, 1, -1)). Float32 as the
+ * exe stores it.
+ */
+export function attaMatrix(f: readonly number[]): Mat3 {
+  const a: Vec3 = [f32(f[0]), f32(f[3]), f32(f[6])];
+  const b: Vec3 = [f32(f[1]), f32(f[4]), f32(f[7])];
+  const c: Vec3 = [f32(b[2] * a[1] - b[1] * a[2]), f32(-(b[2] * a[0] - b[0] * a[2])), f32(b[1] * a[0] - b[0] * a[1])];
+  const unit = (v: Vec3): Vec3 => {
+    if (isZero(v)) return v;
+    const k = 1 / Math.sqrt(v[2] * v[2] + v[1] * v[1] + v[0] * v[0]);
+    return [f32(v[0] * k), f32(v[1] * k), f32(v[2] * k)];
+  };
+  const r0 = unit(a);
+  const r1: Vec3 = [f32(c[1] * a[2] - c[2] * a[1]), f32(-(c[0] * a[2] - c[2] * a[0])), f32(c[0] * a[1] - c[1] * a[0])];
+  const r2: Vec3 = [f32(r1[2] * r0[1] - r1[1] * r0[2]), f32(-(r1[2] * r0[0] - r1[0] * r0[2])), f32(r1[1] * r0[0] - r1[0] * r0[1])];
+  const u1 = unit(r1);
+  const u2 = unit(r2);
+  return [r0[0], r0[1], r0[2], u1[0], u1[1], u1[2], u2[0], u2[1], u2[2]];
+}
+
 /** FUN_004a8cf0: approximate length max + 0.4142 mid + 0.3178 min of |x|, |y|, |z|. */
 export function approxLength(v: readonly number[]): number {
   const a = [Math.abs(v[0]), Math.abs(v[1]), Math.abs(v[2])].sort((p, q) => p - q);
@@ -206,6 +236,39 @@ export interface CarConfig extends VehicleBaseConfig {
 export interface RotorConfig { main: boolean; tail: boolean; spinSign: number; arg3: number; spin: number; model: string }
 export interface WheelModelConfig { model: string; radius: number; bounce: number }
 
+/**
+ * Missile type config (TASKTYPE_MISSILE, class "Missile" FUN_00427ff0, full exe): the base
+ * vehicle config read by the Vehicle class (FUN_004f9e10, through the reader FUN_00429730's
+ * parent call), then the tail FUN_00429730 reads [recovered]: +0x118 smoke (MISSILE_SMOKE_NONE 0 /
+ * NORMAL 1), +0x11c guidance (MISSILE_TYPE_MISSILE_DIRECT 0, HIND_HELICOPTER 1, BALLISTIC 2,
+ * ANTITANK 3, KEYBOARD 4, BOMB 5; symbols registered by FUN_00427ff0), +0x120 fuel, +0x124 burn
+ * per tick = arg x f32 1/30 (0x533678), +0x128, +0x12c / +0x130 = arg x 4096 (0x5333b8), +0x134,
+ * +0x138, +0x13c smoke sprite, +0x23c sound group.
+ */
+export interface MissileConfig extends VehicleBaseConfig {
+  smoke: number;
+  guidance: number;
+  fuel: number;
+  burn: number;
+  /** +0x128 (50 in every shipped type; no reader traced). */
+  arg4: number;
+  /** +0x12c: smoke particle spacing along the path (units); +0x130: the smoke growth end size (units). */
+  smokeSpacing: number;
+  smokeGrowth: number;
+  /** +0x134: ticks between smoke emissions (fistp, chop); +0x138: smoke size / life factor. */
+  smokeInterval: number;
+  smokeSize: number;
+  sprite: string;
+  sound: string;
+}
+
+/** MISSILE_* symbols of the physicsobj scripts (FUN_00427ff0 registration) [recovered]. */
+export const MISSILE_SYMBOLS: Readonly<Record<string, number>> = {
+  MISSILE_SMOKE_NONE: 0, MISSILE_SMOKE_NORMAL: 1,
+  MISSILE_TYPE_MISSILE_DIRECT: 0, MISSILE_TYPE_HIND_HELICOPTER: 1, MISSILE_TYPE_MISSILE_BALLISTIC: 2,
+  MISSILE_TYPE_MISSILE_ANTITANK: 3, MISSILE_TYPE_MISSILE_KEYBOARD: 4, MISSILE_TYPE_BOMB: 5,
+};
+
 export interface PhysicsObjType {
   source: string;
   taskType: string;
@@ -222,7 +285,7 @@ export interface PhysicsObjType {
   restSpeed: number;
   /** +0x2d0: ... and this squared angular speed. */
   restAngular: number;
-  config: VehicleBaseConfig | CarConfig | RotorConfig | WheelModelConfig | { raw: QvmValue[] };
+  config: VehicleBaseConfig | CarConfig | RotorConfig | WheelModelConfig | MissileConfig | { raw: QvmValue[] };
 }
 
 function sym(v: QvmValue | undefined): string {
@@ -255,7 +318,8 @@ export function decodePhysicsObjType(args: readonly QvmValue[], source = ""): Ph
   t.restAngular = f32(num(a[i + 1]));
   i += 2;
   const rest = a.slice(i);
-  if (t.taskType === "TASKTYPE_HELI" || t.taskType === "TASKTYPE_CAR") {
+  // TASKTYPE_PLANE: the base config only (Plane class, FUN_004330f0 registration; spec vehicles §1.4).
+  if (t.taskType === "TASKTYPE_HELI" || t.taskType === "TASKTYPE_CAR" || t.taskType === "TASKTYPE_PLANE") {
     const { cfg, next } = decodeVehicleBase(rest);
     if (t.taskType === "TASKTYPE_CAR") {
       const car = cfg as CarConfig;
@@ -265,6 +329,18 @@ export function decodePhysicsObjType(args: readonly QvmValue[], source = ""): Ph
       cfg.extra = rest.slice(next);
     }
     t.config = cfg;
+  } else if (t.taskType === "TASKTYPE_MISSILE") {
+    // turrets: FUN_00429730 (the Vehicle base config first, then the missile tail).
+    const { cfg, next } = decodeVehicleBase(rest);
+    const r = rest.slice(next);
+    const symOrNum = (v: QvmValue | undefined) => (typeof v === "object" && v !== null && "symbol" in v ? MISSILE_SYMBOLS[v.symbol] ?? 0 : num(v));
+    const m: MissileConfig = {
+      ...cfg,
+      smoke: symOrNum(r[0]), guidance: symOrNum(r[1]), fuel: f32(num(r[2])), burn: f32(f32(num(r[3])) * f32(0.03333333507180214)), arg4: f32(num(r[4])),
+      smokeSpacing: f32(f32(num(r[5])) * 4096), smokeGrowth: f32(f32(num(r[6])) * 4096), smokeInterval: f32(num(r[7])), smokeSize: f32(num(r[8])),
+      sprite: text(r[9]), sound: text(r[10]), extra: r.slice(11),
+    };
+    t.config = m;
   } else if (t.taskType === "TASKTYPE_ROTOR") {
     // FUN_0042ccc0
     t.config = { main: num(rest[0]) !== 0, tail: num(rest[1]) !== 0, spinSign: num(rest[2]), arg3: f32(f32(num(rest[3])) * 0.017453292519943295), spin: f32(num(rest[4])), model: text(rest[5]) };
@@ -315,9 +391,9 @@ function decodeCar(cfg: CarConfig, a: readonly QvmValue[], start: number): numbe
 }
 
 /**
- * Read every DefinePhysicsObjType of one physicsobj script.  Scripts whose
- * argument expressions the call-tree reader does not evaluate (the three plane
- * scripts) throw; callers may skip them (planes are not used by level 1).
+ * Read every DefinePhysicsObjType of one physicsobj script.  The three plane
+ * scripts fold constant argument expressions (`15000 * 1.5`, `0.027 * 2`;
+ * qvm.ts constexpr arguments); a script outside the call-tree grammar throws.
  */
 export function readPhysicsObjTypes(buffer: ArrayBuffer, source = ""): PhysicsObjType[] {
   const calls: QvmCall[] = readQvmCallTree(buffer);
@@ -334,11 +410,21 @@ export function physicsTypeForModel(types: readonly PhysicsObjType[], model: str
 /** magicobj.qvm DefineMagicObj(name, model, TASKTYPE, params...). */
 export interface MagicObjectDef { model: string; taskType: string; params: number[] }
 
+/**
+ * Host symbols magicobj.qvm passes as parameters [recovered: the Rudder
+ * registration FUN_004361d0 (full exe) registers RUDDER_AILERON 0,
+ * RUDDER_TAILERON_LEFT 1, RUDDER_TAILERON_RIGHT 2, RUDDER_GAMMA 3].
+ */
+export const MAGIC_PARAM_SYMBOLS: Readonly<Record<string, number>> = {
+  RUDDER_AILERON: 0, RUDDER_TAILERON_LEFT: 1, RUDDER_TAILERON_RIGHT: 2, RUDDER_GAMMA: 3,
+};
+
 export function readMagicObjects(buffer: ArrayBuffer): Map<string, MagicObjectDef> {
   const out = new Map<string, MagicObjectDef>();
   for (const c of readQvmCallTree(buffer)) {
     if (c.fn !== "DefineMagicObj") continue;
-    out.set(text(c.args[0]).toLowerCase(), { model: text(c.args[1]), taskType: sym(c.args[2]), params: c.args.slice(3).map(num) });
+    const param = (v: QvmValue) => (typeof v === "object" && v !== null && "symbol" in v ? MAGIC_PARAM_SYMBOLS[v.symbol] ?? 0 : num(v));
+    out.set(text(c.args[0]).toLowerCase(), { model: text(c.args[1]), taskType: sym(c.args[2]), params: c.args.slice(3).map(param) });
   }
   return out;
 }
@@ -606,14 +692,16 @@ export function vehicleParamsFromTask(task: IgiTask): VehicleTaskParams {
 }
 
 /** SplineObj parameters and its SplineObjWaypoint children (objects.qvm). */
-export function railParamsFromTask(spline: IgiTask): { linear: boolean; gamma: number; waypoints: RailWaypoint[] } {
+export function railParamsFromTask(spline: IgiTask): RailSplineParams {
   const v3 = (t: IgiTask, k: string): Vec3 => (Array.isArray(t.params[k]) ? (t.params[k] as QvmValue[]).slice(0, 3).map(num) as Vec3 : [0, 0, 0]);
   return {
     linear: spline.params["Linear Segments"] === true,
     gamma: num(spline.params["Gamma Orientation"] as QvmValue),
+    position: v3(spline, "Position"),
+    autoOrient: spline.params["Automatic Orientation"] === true,
     waypoints: spline.children.filter((c) => c.type === "SplineObjWaypoint").map((w) => ({
       position: v3(w, "Position"), orientation: v3(w, "Orientation"), segmentModel: text(w.params["Segment Model"] as QvmValue),
-      pieces: num(w.params["NumAreas"] as QvmValue),
+      pieces: num(w.params["NumAreas"] as QvmValue), autoOrient: w.params["Automatic Orientation"] === true,
     })),
   };
 }
@@ -626,7 +714,7 @@ export interface VehicleModelData {
 
 export interface VehiclePose { position: Vec3; matrix: Mat3 }
 
-abstract class PhysicsVehicle {
+export abstract class PhysicsVehicle {
   readonly type: PhysicsObjType;
   readonly id: number;
   readonly initPosition: Vec3;
@@ -1198,6 +1286,52 @@ export interface RailWaypoint {
   segmentModel: string;
   /** "NumAreas": piece count of that segment [inferred field]. */
   pieces: number;
+  /** "Automatic Orientation" (+0x1a5) of the waypoint. */
+  autoOrient?: boolean;
+}
+
+/** SplineObj parameters the rail needs (objects.qvm SplineObj and its SplineObjWaypoint children). */
+export interface RailSplineParams {
+  linear: boolean;
+  gamma: number;
+  waypoints: RailWaypoint[];
+  /** SplineObj "Position" (+0x2c, float): every waypoint moves by Rz(gamma) Position (FUN_00502740). */
+  position?: Vec3;
+  /** SplineObj "Automatic Orientation" (+0x4f). */
+  autoOrient?: boolean;
+}
+
+/**
+ * The waypoint matrix "Automatic Orientation" builds (waypoint compile
+ * FUN_00500ef0 at 0x500f28..0x501452, full exe) [recovered]: t = (P -
+ * P_prev) + (P_next - P) (float; a missing neighbour's term is left out;
+ * t = 0 -> (1, 0, 0)); h = unit(t.y, -t.x, 0) ((0, 1, 0) when t.x = t.y =
+ * 0); c = h x t; b = c x t; e = unit(t) x b; the matrix has the columns
+ * unit(t), unit(b), unit(e): local x along the tangent, y horizontal, z up.
+ */
+export function autoOrientMatrix(p: readonly number[], prev: readonly number[] | null, next: readonly number[] | null): Mat3 {
+  let t: Vec3 = [0, 0, 0];
+  if (prev) t = [f32(p[0] - prev[0]), f32(p[1] - prev[1]), f32(p[2] - prev[2])];
+  if (next) t = [f32((next[0] - p[0]) + t[0]), f32(f32(next[1] - p[1]) + t[1]), f32(f32(next[2] - p[2]) + t[2])];
+  const m0: Vec3 = t[0] === 0 && t[1] === 0 && t[2] === 0 ? [1, 0, 0] : t;
+  let h: Vec3;
+  if (m0[0] === 0 && m0[1] === 0) h = [0, 1, 0];
+  else {
+    const k = 1 / Math.sqrt(m0[1] * m0[1] + m0[0] * m0[0]);
+    h = [f32(m0[1] * k), f32(-m0[0] * k), 0];
+  }
+  const c: Vec3 = [f32(h[1] * m0[2] - h[2] * m0[1]), f32(-(h[0] * m0[2] - h[2] * m0[0])), f32(h[0] * m0[1] - h[1] * m0[0])];
+  const unit = (v: Vec3): Vec3 => {
+    if (isZero(v)) return v;
+    const k = 1 / Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    return [f32(v[0] * k), f32(v[1] * k), f32(v[2] * k)];
+  };
+  const tu = unit(m0);
+  const b: Vec3 = [f32(m0[2] * c[1] - c[2] * m0[1]), f32(-(m0[2] * c[0] - c[2] * m0[0])), f32(m0[1] * c[0] - m0[0] * c[1])];
+  const e: Vec3 = [f32(b[2] * tu[1] - b[1] * tu[2]), f32(-(b[2] * tu[0] - b[0] * tu[2])), f32(b[1] * tu[0] - b[0] * tu[1])];
+  const bu = unit(b);
+  const eu = unit(e);
+  return [tu[0], bu[0], eu[0], tu[1], bu[1], eu[1], tu[2], bu[2], eu[2]];
 }
 
 export interface RailSegment {
@@ -1235,12 +1369,15 @@ export class RailSpline {
    * triggers it is inferred — level 1's 3.1415929 is one float ulp above pi,
    * a sub-millimetre effect].
    */
-  constructor(params: { linear: boolean; gamma: number; waypoints: RailWaypoint[] }, gammaQuirk = true) {
+  constructor(params: RailSplineParams, gammaQuirk = true) {
     this.linear = params.linear;
     const wps = params.waypoints.map((w) => ({
       position: [...w.position] as Vec3, matrix: eulerF(w.orientation[0], w.orientation[1], w.orientation[2]), segmentModel: w.segmentModel, pieces: w.pieces,
     }));
     const gamma = f32(params.gamma);
+    // FUN_00502740 (SplineObj compile, full exe) [recovered]: the create (0x5026e0) stores
+    // gamma0 = pi (float 0x40490fdb) and a zero "previous position"; a loaded "Gamma Orientation"
+    // different from gamma0 rotates every waypoint about the first by Rz(gamma - gamma0).
     if (gammaQuirk && wps.length && gamma !== PI_F) {
       const r = rotZ(f32(gamma - PI_F));
       const first = [...wps[0].position];
@@ -1252,6 +1389,22 @@ export class RailSpline {
           (r[6] * d[0] + r[7] * d[1] + r[8] * d[2]) + first[2],
         ];
         w.matrix = matMulF(w.matrix, r);
+      }
+    }
+    // FUN_00502740, then: a "Position" different from the stored zero moves every waypoint by
+    // Rz(gamma) Position (float vector added to the double positions, 0x502d8a).
+    const shift = (params.position ?? [0, 0, 0]).map(f32);
+    if (shift[0] !== 0 || shift[1] !== 0 || shift[2] !== 0) {
+      const r = rotZ(gamma);
+      const t = [f32(r[0] * shift[0] + r[1] * shift[1] + r[2] * shift[2]), f32(r[3] * shift[0] + r[4] * shift[1] + r[5] * shift[2]), f32(r[6] * shift[0] + r[7] * shift[1] + r[8] * shift[2])];
+      for (const w of wps) w.position = [t[0] + w.position[0], t[1] + w.position[1], t[2] + w.position[2]];
+    }
+    // Waypoint compile FUN_00500ef0 (0x500f28): "Automatic Orientation" of the SplineObj or the
+    // waypoint, a curved spline and a neighbour -> the waypoint matrix follows the tangent.
+    if (!params.linear) {
+      for (let k = 0; k < wps.length; k++) {
+        if (!(params.autoOrient || params.waypoints[k].autoOrient) || wps.length < 2) continue;
+        wps[k].matrix = autoOrientMatrix(wps[k].position, k > 0 ? wps[k - 1].position : null, k + 1 < wps.length ? wps[k + 1].position : null);
       }
     }
     this.waypoints = wps;

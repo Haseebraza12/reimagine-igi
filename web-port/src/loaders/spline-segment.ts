@@ -72,6 +72,9 @@ export interface SplineParams {
   gamma: number;
   matricesPerSegment: number;
   waypoints: SplineWaypointParams[];
+  /** "Position" (+0x2c) and "Automatic Orientation" (+0x4f): see vehicles.ts RailSpline. */
+  position?: Vec3;
+  autoOrient?: boolean;
 }
 
 export function splineParamsFromTask(spline: IgiTask): SplineParams {
@@ -79,6 +82,8 @@ export function splineParamsFromTask(spline: IgiTask): SplineParams {
   return {
     linear: spline.params["Linear Segments"] === true,
     gamma: numberParam(spline, "Gamma Orientation") ?? Math.PI,
+    position: vec3Param(spline, "Position") ?? [0, 0, 0],
+    autoOrient: spline.params["Automatic Orientation"] === true,
     matricesPerSegment: matrices,
     waypoints: spline.children.filter((c) => c.type === "SplineObjWaypoint").map((w) => {
       const areas = numberParam(w, "NumAreas") ?? MAX_SEGMENT_PIECES;
@@ -88,6 +93,7 @@ export function splineParamsFromTask(spline: IgiTask): SplineParams {
         segmentModel: stringParam(w, "Segment Model") ?? "",
         // min(NumAreas, Number of Matrices / Segment, 20) [recovered 0x4f8098]
         pieces: Math.min(areas, matrices, MAX_SEGMENT_PIECES),
+        autoOrient: w.params["Automatic Orientation"] === true,
         align: w.params["Align"] === true,
         flip: w.params["Flip"] === true,
       };

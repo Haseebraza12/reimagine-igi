@@ -254,6 +254,29 @@ export class TerrainOctree {
   private readonly records = new Map<number, CellRecord>();
   private readonly regions: ReliefRegion[] = [];
   readonly nodeCount: number;
+  /** Child slots dropped because their child index or transform is out of range. */
+  invalidSlots = 0;
+  /** DiscardTerrain nodes ("level:cx:cy:cz", node centre in IGI units): nothing of their subtree is emitted. */
+  private readonly discards = new Set<string>();
+
+  /**
+   * DiscardTerrain (full game; class FUN_0052c0c0) [recovered]: the task's cube is the level-`level`
+   * octree node containing `position` (compile FUN_0052c290: side = 2^(31 - level), min =
+   * (trunc(p) & -side)). When the render traversal visits that node it zeroes the node's terrain
+   * child mask (method 0xf, FUN_004d14e0), and terrain ray hits inside the cube are vetoed
+   * (method 0xb, FUN_0052bf00): here neither the drawn cells nor the collision cells below it exist.
+   * A node drawn whole at a coarser LOD (not visited) still shows its terrain, as in the exe.
+   */
+  addDiscard(position: readonly number[], level: number): void {
+    if (!(level >= 1 && level <= TERRAIN_GAME_MAX_LEVEL)) return;
+    const side = 2 ** (31 - level);
+    const centre = (v: number) => Math.floor(x87Fistp(v) / side) * side + side / 2;
+    this.discards.add(`${level}:${centre(position[0])}:${centre(position[1])}:${centre(position[2])}`);
+  }
+
+  private discarded(level: number, cx: number, cy: number, cz: number): boolean {
+    return this.discards.size > 0 && this.discards.has(`${level}:${cx}:${cy}:${cz}`);
+  }
 
   constructor(ctr: ArrayBuffer, cmd: ArrayBuffer, hmp?: ArrayBuffer, heightMaps: HeightMapTask[] = []) {
     if (ctr.byteLength % 32 !== 0 || ctr.byteLength < 64) fail("terrain.ctr size is not a multiple of 32");
@@ -273,10 +296,14 @@ export class TerrainOctree {
       }
       this.mask[i] = view.getUint8(o + 24);
       this.rec[i] = view.getUint32(o + 28, true);
+      // igi.exe does not check the nodes (FUN_004c6240 only relocates the cmd offsets). A slot
+      // whose child does not exist is dropped; in the shipped missions such slots are only found
+      // in nodes the root never reaches (level 14's terrain is empty from the root).
       for (let s = 0; s < 8; s++) {
         const has = (this.mask[i] >> s) & 1;
         if (has && (this.trans[i * 8 + s] < 0 || this.child[i * 8 + s] >= n)) {
-          fail(`node ${i} slot ${s} has an invalid child`);
+          this.mask[i] &= ~(1 << s);
+          this.invalidSlots++;
         }
       }
     }
@@ -497,7 +524,7 @@ export class TerrainOctree {
         const ct = COMP[t][trans[node * 8 + s]];
         if (m >= T || cl >= TERRAIN_GAME_MAX_LEVEL) {
           if (cl >= MIN_EMIT_LEVEL) out.push({ node: childNode, level: cl, cx: ccx, cy: ccy, cz: ccz, t: ct });
-        } else {
+        } else if (!this.discarded(cl, ccx, ccy, ccz)) {
           visit(childNode, cl, ccx, ccy, ccz, ct);
         }
       }
@@ -547,6 +574,8 @@ export class TerrainOctree {
         yield cell;
         continue;
       }
+      // A DiscardTerrain node that would be refined has no terrain below it (no collision there).
+      if (this.discarded(cell.level, cell.cx, cell.cy, cell.cz)) continue;
       for (const c of this.children(cell)) stack.push(c);
     }
   }

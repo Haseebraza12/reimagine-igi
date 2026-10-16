@@ -259,7 +259,7 @@ export function createSmokeEmitters(host: SmokeEmitterHost): SmokeEmitters {
       let parent = -1;
       const containers: number[] = [];
       for (let a = n.parent; a >= 0; a = nodes[a].parent) {
-        if (parent < 0 && (nodes[a].type === "Train" || nodes[a].type === "Heli" || nodes[a].type === "Car")) parent = a;
+        if (parent < 0 && (nodes[a].type === "Train" || nodes[a].type === "Heli" || nodes[a].type === "Car" || nodes[a].type === "Plane")) parent = a;
         if (nodes[a].type === "ConditionalContainer") containers.push(a);
       }
       // FUN_004374c0: the offset in the parent's frame at load.

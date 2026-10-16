@@ -68,6 +68,7 @@ import {
   type IgiLevel,
   type IgiTask,
   type MissionHuman,
+  type MissionNode,
   type SecurityCameraCone,
   type SecurityCameraTask,
   type TaskPose,
@@ -76,12 +77,14 @@ import {
 import { NO_MATERIAL, aiSightPasses, sightTransmission } from "../../loaders/collision-mesh";
 import type { GameContext, TaskRuntimeApi } from "../context";
 import { GameEvent } from "../events";
-import { createVehicleSystem, type VehicleSystem } from "../world/vehicles";
+import { createVehicleSystem, type MountedWeaponHooks, type VehicleSystem } from "../world/vehicles";
 import { scameraLensKey, taskNodeOfKey } from "../world/world-builder";
 import { TRI_SIGHT } from "../world/collision";
 import { damageSystemOf } from "../combat/object-damage";
 import { CutsceneFilters } from "../render/cutscene-filter-state";
+import { isSoldierTaskType } from "../../loaders/soldier-types";
 import { LevelRng } from "../ai/rng";
+import { createObjectPresenter, type ObjectPresenter } from "./object-presenter";
 
 const UNITS_PER_METRE = 4096;
 /** Eye above the human origin (FUN_00464490): the origin is eye - 0.69 m standing / - 0.35 m crouched. */
@@ -170,6 +173,28 @@ export interface MissionSystem extends TaskRuntimeApi {
   securityCameraLights(): SecurityCameraLightQuad[];
   /** Lens detector of an SCamera node (diagnostics / tests), or null. */
   cameraDetector(node: number): SecurityCameraDetector | null;
+  /** The full game's object tasks in the engine (elevators, pickups, drawers, sounds; object-presenter.ts). */
+  readonly objects: ObjectPresenter;
+  /**
+   * A human about to take its platform's motion (dynamic body = task node `node`): an elevator whose
+   * node has not run yet this tick updates now (FUN_0043e290 calls the elevator's update; its guard
+   * keeps it to once per tick) and the world follows.
+   */
+  prepareRide(node: number): void;
+  /**
+   * Current pose (IGI) of task node `node`: an elevator's runtime pose, a vehicle's simulated pose,
+   * a moved task's override, else its placement (Position, Orientation / Gamma); null when none.
+   */
+  poseOfNode(node: number): TaskPose | null;
+  // --- combat: registered task behaviours (loaders/objects) ---------------------------------
+  /** Receive the runtime's MissionHost.onTaskEvent (GuardGenerator spawns, MineField explosions, ...); returns the remover. */
+  onTaskEvent(handler: (node: MissionNode, event: string, data?: unknown) => void): () => void;
+  /** Answer MissionHost.query(name, ...args) for the registered behaviours (null removes it). */
+  setTaskQuery(name: string, fn: ((...args: unknown[]) => unknown) | null): void;
+  /** A HumanAI compiled at run time (a GuardGenerator spawn, FUN_00488000) takes the counter's next phase (FUN_00487ae0). */
+  takePerceptionPhase(node: number): number;
+  /** turrets: the vehicles' attached weapons (combat/vehicle-weapons.ts); the vehicle system calls them (null removes them). */
+  setVehicleWeapons(hooks: MountedWeaponHooks | null): void;
 }
 
 /** One alarm light quad: screen-aligned at `position` (engine metres), colour (r, g, b) in the 1/128 scale, half-size metres. */
@@ -185,6 +210,8 @@ export interface MissionWorld {
   setTaskTransform(key: number, matrix: ArrayLike<number>): void;
   setInstanceTransform(i: number, matrix: ArrayLike<number>, copy?: number): void;
   setTaskHidden(key: number, hidden: boolean): void;
+  /** Swap / remove a destructible instance (world-builder BuiltWorld; the exploded car's wreck). */
+  setInstanceModel?(i: number, model: import("../../loaders").LevelModel | null): boolean;
 }
 
 /** IGI vector -> engine axes (x, z, -y). */
@@ -192,6 +219,7 @@ const conv = (v: readonly number[]): THREE.Vector3 => new THREE.Vector3(v[0], v[
 
 export function createMissionSystem(ctx: GameContext): MissionSystem {
   let runtime: MissionRuntime | null = null;
+  const objects = createObjectPresenter(ctx);
   let vehicles: VehicleSystem | null = null;
   let level: IgiLevel | null = null;
   let cutscene: CutsceneView | null = null;
@@ -260,13 +288,18 @@ export function createMissionSystem(ctx: GameContext): MissionSystem {
         initial = poseToEngine(pose, new THREE.Matrix4()).invert();
         doorInitial.set(door.nodeIndex, initial);
       }
-      deltaMatrix.multiplyMatrices(poseToEngine(pose, engineMatrix), initial);
+      // A door carried by an elevator (L14): its own motion, then the elevator's (0x547f40).
+      const carry = objects.carried(door.nodeIndex);
+      const placedPose = carry ? carry(pose) : pose;
+      if (carry && door.id >= 0) poseOverrides.set(door.id, placedPose);
+      deltaMatrix.multiplyMatrices(poseToEngine(placedPose, engineMatrix), initial);
       world.setTaskTransform(door.nodeIndex, deltaMatrix.elements);
     }
+    objects.sync(world, poseToEngine);
     vehicles?.sync(world);
     syncSecurityCameras(world);
     for (const key of world.dynamicTasks) {
-      const hidden = !inWorldNode(taskNodeOfKey(key));
+      const hidden = (!inWorldNode(taskNodeOfKey(key)) && !wrecks.has(key)) || objects.hidden(taskNodeOfKey(key));
       if (hiddenTasks.get(key) !== hidden) {
         hiddenTasks.set(key, hidden);
         world.setTaskHidden(key, hidden);
@@ -358,7 +391,7 @@ export function createMissionSystem(ctx: GameContext): MissionSystem {
     loadPhases = phases;
     for (const n of runtime.tasks.nodes) {
       if (n.type === "HumanPlayer" && playerNode < 0) playerNode = n.index;
-      if (n.type === "HumanSoldier" && n.id >= 0 && !soldierNodes.has(n.id)) soldierNodes.set(n.id, n.index);
+      if (isSoldierTaskType(n.type) && n.id >= 0 && !soldierNodes.has(n.id)) soldierNodes.set(n.id, n.index);
     }
     for (const cam of runtime.tasks.securityCameras) {
       const holder = lvl.instances.findIndex((i) => i.part === undefined && i.taskIndex === cam.nodeIndex);
@@ -524,7 +557,8 @@ export function createMissionSystem(ctx: GameContext): MissionSystem {
   };
 
   /** A soldier by its own node when known (task ids repeat), else by task id. */
-  function enemyInWorld(e: { taskId: number; node?: number }): boolean {
+  function enemyInWorld(e: { taskId: number; node?: number; outOfWorld?: boolean }): boolean {
+    if (e.outOfWorld) return false; // removed from the world (a corpse after 300 ticks, combat/enemy.ts)
     return e.node !== undefined && e.node >= 0 ? inWorldNode(e.node) : inWorld(e.taskId);
   }
 
@@ -585,7 +619,7 @@ export function createMissionSystem(ctx: GameContext): MissionSystem {
     if (type === "HumanPlayer") {
       if (member === "isDead") return ctx.player.alive ? 0 : 1;
       if (member === "eTeam") return 0;
-    } else if (type === "HumanSoldier") {
+    } else if (isSoldierTaskType(type)) {
       const e = ctx.enemies.find((x) => x.taskId === id);
       if (member === "isDead") return e && !e.alive ? 1 : 0;
       if (member === "eTeam") return teamOf.get(id) ?? 1;
@@ -595,7 +629,7 @@ export function createMissionSystem(ctx: GameContext): MissionSystem {
         return enemies?.isDetection?.(id) ?? 0;
       }
     } else if (type === "Car" && member === "isExploded") {
-      return 0; // vehicle damage is not simulated yet
+      return vehicles?.isExploded(id) ?? 0; // +0x2ed5 (world/vehicles.ts car explosion)
     }
     return undefined;
   }
@@ -669,8 +703,93 @@ export function createMissionSystem(ctx: GameContext): MissionSystem {
     }, nowMs());
   }
 
+  /** combat: handlers of MissionHost.onTaskEvent / query (registered task behaviours). */
+  const taskEventHandlers = new Set<(node: MissionNode, event: string, data?: unknown) => void>();
+  const taskQueries = new Map<string, (...args: unknown[]) => unknown>();
+
   /** Link-task poses captured when the runtime is built (FUN_004ff270). */
   const initialPoses = new Map<number, TaskPose>();
+
+  // --- Vehicles: perception, targets, explosions (world/vehicles.ts, spec vehicles §2.7, §3.1) ----
+  /** Car task keys replaced by their wreck (FUN_004f0ee0): kept visible out of the world as well. */
+  const wrecks = new Set<number>();
+  /** turrets: the attached weapons of the vehicles (combat/vehicle-weapons.ts). */
+  let vehicleWeapons: MountedWeaponHooks | null = null;
+  function registryHuman(key: string | number): { alive: boolean; origin: Vec3 } | null {
+    const k = String(key);
+    if (k === "player") {
+      const p = ctx.player;
+      return { alive: p.alive, origin: humanOrigin(p.position, p.crouching, p.eyeHeight) };
+    }
+    const id = Number(k.slice(k.indexOf(":") + 1));
+    const e = ctx.enemies.find((x) => x.id === id);
+    if (!e) return null;
+    const ai = ctx.systems?.enemies?.aiOf?.(e) ?? null;
+    const origin = ai ? ([...ai.self.origin()] as Vec3) : toIgi([e.position[0], e.position[1] + SOLDIER_ORIGIN_M, e.position[2]]);
+    return { alive: e.alive, origin };
+  }
+  /** FUN_00489b20 for a vehicle eye: the sight ray of the soldiers / cameras, the vehicle's own instances skipped. */
+  function vehicleLineOfSight(from: Vec3, point: Vec3, target: string | number, selfKey: number): boolean {
+    const w = ctx.world;
+    if (!w || !level) return true;
+    const a = igiPointToEngine(from, level.originIgi);
+    const b = igiPointToEngine(point, level.originIgi);
+    const dx = b[0] - a[0];
+    const dy = b[1] - a[1];
+    const dz = b[2] - a[2];
+    const d = Math.hypot(dx, dy, dz);
+    if (d < 1e-9) return true;
+    const lvl = level;
+    const hits: Array<{ material: number; front: boolean; terrain?: boolean }> = w
+      .raycastAll(a[0], a[1], a[2], dx / d, dy / d, dz / d, d, TRI_SIGHT)
+      .filter((h) => !(h.owner >= 0 && lvl.instances[h.owner]?.taskIndex === selfKey))
+      .map((h) => ({ material: h.material < 0 ? NO_MATERIAL : h.material, front: h.front, terrain: h.terrain }));
+    const enemies = ctx.systems?.enemies;
+    if (enemies?.sightHits) hits.push(...enemies.sightHits(a, b, [humanKey(target)]));
+    const table = level.surfaceMaterials;
+    return aiSightPasses(sightTransmission(hits, (m) => table[m]?.seeThrough ?? 0));
+  }
+  function vehicleHooks(): Omit<Parameters<typeof createVehicleSystem>[2], "collision" | "runtime"> {
+    return {
+      evaluate: (text) => (runtime ? runtime.evaluate(text) : 0),
+      humans: () => (nodeTick ? captureHumans() : (humanSnapshot ??= captureHumans())),
+      lineOfSight: vehicleLineOfSight,
+      appTick: () => ctx.appTick ?? ctx.tick,
+      phase: (node) => loadPhases.get(node),
+      nextPhase: () => {
+        const p = phaseCounter;
+        phaseCounter = (phaseCounter + 1) & 3;
+        return p;
+      },
+      targetDead: (key) => !(registryHuman(key)?.alive ?? false),
+      targetPosition: (key) => registryHuman(key)?.origin ?? null,
+      carDamaged: (node) => damageSystemOf(ctx)?.objects.some((o) => o.kind === "car" && o.node === node && o.flag) ?? false,
+      explode: (e) => {
+        const d = damageSystemOf(ctx);
+        if (!d) return;
+        // FUN_00480fe0(position, 1, delay, damage, radius, falloff, scorch, fragments, fireballs, 0, "1009_01_1", sound, 21, 2, 100000, 0).
+        d.explode(d.makeExplosion({
+          position: e.position, interval: e.delay, damage: e.damage, radius: e.radius, falloff: e.falloff, scorch: e.scorch,
+          fragments: e.fragments, fireballs: e.fireballs, sound: e.sound, aiRange: 100000, fragmentModel: "1009_01_1",
+        }));
+      },
+      wreck: (carNode, wreckModel) => {
+        if (!level) return;
+        wrecks.add(carNode);
+        const model = wreckModel ? damageSystemOf(ctx)?.data?.models.get(wreckModel.toLowerCase()) ?? null : null;
+        level.instances.forEach((inst, i) => {
+          if (inst.taskIndex !== carNode) return;
+          const root = (inst.attachmentPath ?? "") === "" && inst.part === undefined;
+          world?.setInstanceModel?.(i, root ? model : null);
+        });
+      },
+      random: () => ctx.rng.float(),
+      // turrets: the vehicles' attached weapons (combat/vehicle-weapons.ts, registered by combat-objects.ts).
+      mounted: () => vehicleWeapons,
+      modelRadius: (model) => damageSystemOf(ctx)?.modelRadius(model) ?? 0,
+      log: (message) => console.info(`[vehicles] ${message}`),
+    };
+  }
 
   const system: MissionSystem = {
     get runtime() {
@@ -700,6 +819,7 @@ export function createMissionSystem(ctx: GameContext): MissionSystem {
       failed = false;
       failedAnnounced = false;
       outOfWorld.clear();
+      wrecks.clear();
       poseOverrides.clear();
       doorInitial.clear();
       hiddenTasks.clear();
@@ -714,17 +834,29 @@ export function createMissionSystem(ctx: GameContext): MissionSystem {
       const tasks = buildMissionTasks(next.taskRoots);
       runtime = null;
       // Vehicles exist before the runtime: its compile already sends nTick 0 to them (docs/vehicles.md 8).
-      vehicles = createVehicleSystem(next, tasks, { collision: () => ctx.world, runtime: () => runtime });
+      vehicles = createVehicleSystem(next, tasks, { collision: () => ctx.world, runtime: () => runtime, ...vehicleHooks() });
       runtime = new MissionRuntime(tasks, {
         humans,
+        // CRITERIA_VEHICLE (FUN_004f4560): the Vehicle-class objects in the world.
+        vehicles: () => (vehicles?.areaVehicles() ?? []).filter((v) => inWorldNode(v.node)),
+        // turrets: the end of the Car update after its children (world/vehicles.ts afterChildren).
+        afterTaskChildren(node) {
+          if (node.type === "Car") vehicles?.afterChildren(node.index);
+        },
         value,
         updateTask(node) {
+          // Vehicle task updates at their node (world/vehicles.ts taskUpdate): Car "Can fire" / explosion,
+          // CarAI driving (FUN_00425de0), Plane / Heli "Play sound", Heli "Open door".
+          if (node.type === "Car" || node.type === "CarAI" || node.type === "Plane" || node.type === "Heli") {
+            vehicles?.taskUpdate(node.index);
+            vehiclesMoved = true;
+          }
           if (!nodeTick) return false;
           if (node.type === "Train" || node.type === "Heli" || node.type === "Car") vehiclesMoved = true;
           if (node.type === "HumanPlayer") {
             syncWorld();
             vehiclesMoved = false;
-          } else if ((node.type === "HumanSoldier" || node.type === "HumanAI") && vehiclesMoved && world) {
+          } else if ((isSoldierTaskType(node.type) || node.type === "HumanAI") && vehiclesMoved && world) {
             vehicles?.sync(world);
             vehiclesMoved = false;
           }
@@ -769,8 +901,18 @@ export function createMissionSystem(ctx: GameContext): MissionSystem {
           vehiclesMoved = true;
         },
         cameraSighting,
+        // The registered task behaviours (loaders/objects) talk to the engine through these: the
+        // object presenter (sounds, elevators, pickups) and the combat systems' handlers / queries.
+        onTaskEvent: (node, event, data) => {
+          objects.event(node, event, data);
+          for (const h of [...taskEventHandlers]) h(node, event, data);
+        },
+        query: (name, ...args) => (taskQueries.has(name) ? taskQueries.get(name)!(...args) : objects.query(name, ...args)),
+        random: () => ctx.rng.float(),
+        randomInt: (n) => ctx.rng.int(n),
         warn: (message) => console.info(`[mission] ${message}`),
       });
+      objects.start(next, runtime);
       setupCameraVision();
       for (const cut of tasks.cutScenes) {
         for (const key of cut.keys) {
@@ -791,6 +933,7 @@ export function createMissionSystem(ctx: GameContext): MissionSystem {
       humanSnapshot = nodeTick ? null : nextSnapshot;
       nextSnapshot = null;
       runtime.tick();
+      objects.tick();
       // What the cameras see next tick unless beginTick() refreshes it before the humans move.
       if (!nodeTick) nextSnapshot = captureHumans();
       breakRequested = false;
@@ -852,6 +995,36 @@ export function createMissionSystem(ctx: GameContext): MissionSystem {
       if (!nodeTick) nextSnapshot = captureHumans();
     },
     securityCameraLights,
+    objects,
+    poseOfNode(node) {
+      const n = runtime?.tasks.nodes[node];
+      if (!n) return null;
+      if (n.type === "Elevator") return objects.poseOf(node);
+      return n.id >= 0 ? taskPose(n.id) : null;
+    },
+    prepareRide(node) {
+      if (!runtime || runtime.tasks.nodes[node]?.type !== "Elevator") return;
+      if (runtime.nodeState(node).guard === runtime.levelTick) return;
+      runtime.updateBehaviourNow(node);
+      syncWorld();
+    },
+    onTaskEvent(handler) {
+      taskEventHandlers.add(handler);
+      return () => void taskEventHandlers.delete(handler);
+    },
+    setTaskQuery(name, fn) {
+      if (fn) taskQueries.set(name, fn);
+      else taskQueries.delete(name);
+    },
+    setVehicleWeapons(hooks) {
+      vehicleWeapons = hooks;
+    },
+    takePerceptionPhase(node) {
+      const phase = phaseCounter;
+      loadPhases.set(node, phase);
+      phaseCounter = (phaseCounter + 1) & 3;
+      return phase;
+    },
     cameraDetector(node) {
       return cameraEyes.get(node)?.detector ?? null;
     },

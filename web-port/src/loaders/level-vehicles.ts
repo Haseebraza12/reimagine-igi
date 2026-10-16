@@ -12,6 +12,8 @@
  * (FUN_004e4cc0), and no level-1 vehicle model is defined twice.
  */
 import type { IAssetSource } from "../contracts";
+import { readAiGraph } from "./ai-graph";
+import type { CarAiGraph } from "./car-ai";
 import { readMef } from "./mef";
 import type { IgiTask } from "./tasks";
 import { stringParam } from "./tasks";
@@ -46,7 +48,7 @@ export const PHYSICSOBJ_SCRIPTS = [
 ];
 
 /** Task types whose "Model" is a vehicle (docs/vehicles.md). */
-export const VEHICLE_TASK_TYPES = new Set(["Heli", "Car", "Train"]);
+export const VEHICLE_TASK_TYPES = new Set(["Heli", "Car", "Train", "Plane"]);
 
 export interface LevelVehicles {
   /** DefinePhysicsObjType records (PHYSICSOBJ_SCRIPTS order). */
@@ -55,6 +57,11 @@ export interface LevelVehicles {
   magic: Map<string, MagicObjectDef>;
   /** XTVM + ATTA of the vehicle task models and of every model attached to them (by model name). */
   models: Map<string, VehicleModelData>;
+  /**
+   * The AIGraphs the CarAI tasks drive on (by AIGraph task id): graphs/graph<id>.dat with the
+   * task's "Graph position" (FUN_004efe60, docs/ai.md 3; CarAI compile FUN_004265a0, full exe).
+   */
+  graphs: Map<number, CarAiGraph>;
 }
 
 export async function loadLevelVehicles(
@@ -63,14 +70,15 @@ export async function loadLevelVehicles(
   modelBuffer: (name: string) => ArrayBuffer | null,
   magicObjectsPath: string,
   warnings: string[],
+  graphsDir: string | null = null,
 ): Promise<LevelVehicles> {
   const types: PhysicsObjType[] = [];
   for (const path of PHYSICSOBJ_SCRIPTS) {
     if (!(await raw.exists(path))) continue;
     try {
       types.push(...readPhysicsObjTypes(await raw.readBinary(path), path));
-    } catch {
-      // The three plane scripts use argument expressions the call-tree reader does not evaluate (vehicles.ts).
+    } catch (error) {
+      warnings.push(`physics types ${path}: ${(error as Error).message}`);
     }
   }
   const magic = (await raw.exists(magicObjectsPath)) ? readMagicObjects(await raw.readBinary(magicObjectsPath)) : new Map<string, MagicObjectDef>();
@@ -95,5 +103,29 @@ export async function loadLevelVehicles(
     const model = stringParam(task, "Model");
     if (model) visit(model, 0);
   }
-  return { types, magic, models };
+  // CarAI graphs (spec vehicles §2.3): the AIGraph tasks named by a CarAI "Graph ID".
+  const graphs = new Map<number, CarAiGraph>();
+  if (graphsDir !== null) {
+    const byId = new Map<number, IgiTask>();
+    for (const t of tasks) if (t.id >= 0 && !byId.has(t.id)) byId.set(t.id, t);
+    for (const task of tasks) {
+      if (task.type !== "CarAI") continue;
+      const id = typeof task.params["Graph ID"] === "number" ? (task.params["Graph ID"] as number) : -1;
+      const graphTask = byId.get(id);
+      if (graphs.has(id) || !graphTask || graphTask.type !== "AIGraph") continue;
+      const path = `${graphsDir}graph${id}.dat`;
+      try {
+        if (!(await raw.exists(path))) {
+          warnings.push(`CarAI ${task.id}: no graph file ${path}`);
+          continue;
+        }
+        const p = graphTask.params["Graph position"];
+        const position: [number, number, number] = Array.isArray(p) && p.length === 3 ? [Number(p[0]), Number(p[1]), Number(p[2])] : [0, 0, 0];
+        graphs.set(id, { graph: readAiGraph(await raw.readBinary(path)), position });
+      } catch (error) {
+        warnings.push(`CarAI graph ${id}: ${(error as Error).message}`);
+      }
+    }
+  }
+  return { types, magic, models, graphs };
 }

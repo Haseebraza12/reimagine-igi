@@ -53,6 +53,7 @@ import { createComputerWorld } from "./computer-world";
 import { CONTROL_KEYS, MenuConfig, type MenuSettingsSnapshot, type SettingsChange } from "./menu-config";
 import type { TypewriterEntry } from "./menu-widgets";
 import { codeFor } from "../input";
+import { TRI_BULLET } from "../world/collision";
 
 export interface HudCallbacks {
   /**
@@ -252,7 +253,7 @@ export interface Hud {
 
 /** The parts of GameContext the HUD reads. */
 export type HudContext = Pick<GameContext, "events" | "player" | "weapon" | "level" | "frame" | "canvas" | "running">
-  & Partial<Pick<GameContext, "enemies" | "world" | "systems" | "rng">>;
+  & Partial<Pick<GameContext, "enemies" | "world" | "systems" | "rng" | "camera">>;
 
 type Mode = "none" | "main" | "game";
 
@@ -564,7 +565,12 @@ export function createHud(ctx: HudContext, options: HudOptions = {}): Hud {
       },
       // Story Mode: the missions up to the profile's progress (GOActiveMission), as igi.exe lists
       // them; Free Mode: every installed mission.
-      missions: () => (assets?.missions ?? []).filter((m) => playMode === "free" || m.id <= Math.max(1, config.profile.activeMission)),
+      missions: () =>
+        playMode === "free"
+          ? (assets?.missionCatalogue ?? [])
+          : (assets?.missions ?? []).filter((m) => m.id <= Math.max(1, config.profile.activeMission)),
+      // Free Mode lists missions whose files are not staged; Select Mission asks before starting one.
+      missionInstalled: (id) => (assets?.missions ?? []).some((m) => m.id === id),
       setPlayMode: (m) => {
         playMode = m === PLAY_MODE.free ? "free" : "story";
       },
@@ -797,7 +803,7 @@ export function createHud(ctx: HudContext, options: HudOptions = {}): Hud {
       tint.tick();
       flash.tick();
       pulse.tick(actionIcon !== null);
-      if (scope?.kind === "binoculars") binocularBars.tick(random);
+      if (scope?.kind === "binoculars" || holderOverlay()) binocularBars.tick(random);
       if (computer) {
         // ComputerMenu FUN_004697d0 (skipped while paused, FUN_00415c50).
         computer.logLength = computerLog.entries.length;
@@ -821,6 +827,28 @@ export function createHud(ctx: HudContext, options: HudOptions = {}): Hud {
 
   // --- drawing ------------------------------------------------------------------
   const list = new PrimList();
+
+  /** A BinocularOverlayHolder is visible (mission-system objects, full exe LAB_00471330). */
+  function holderOverlay(): boolean {
+    return (ctx.systems?.tasks as unknown as { objects?: { binocularOverlay: boolean } } | null)?.objects?.binocularOverlay === true;
+  }
+
+  /**
+   * The holder overlay's view (slot 0x5488c8, LAB_00472400): the global view camera's position
+   * and forward; the RANGE ray is 1000 m (914.4 m, 3000 ft, in the USA build: FUN_0048f2d0).
+   */
+  function holderScopeView(): ScopeView | null {
+    const cam = ctx.camera;
+    if (!cam || !holderOverlay()) return null;
+    cam.updateMatrixWorld();
+    const e = cam.matrixWorld.elements;
+    const f = [-e[8], -e[9], -e[10]];
+    const n = Math.hypot(f[0], f[1], f[2]) || 1;
+    const range = usa ? 914.4 : 1000;
+    const hit = ctx.world?.raycast(e[12], e[13], e[14], f[0] / n, f[1] / n, f[2] / n, range, TRI_BULLET) ?? null;
+    // Port yaw: 0 = -z, counter-clockwise (the camera's YXZ heading).
+    return { kind: "binoculars", yaw: Math.atan2(-f[0], -f[2]), rangeMetres: hit ? hit.distance : null };
+  }
 
   function weaponView(): HudView["weapon"] {
     const w = ctx.weapon;
@@ -892,6 +920,7 @@ export function createHud(ctx: HudContext, options: HudOptions = {}): Hud {
       flashAlpha: flash.alpha,
       timerTicks: timer,
       scope,
+      holderScope: holderScopeView(),
       binocularBars,
       binocularTargets,
       nowMs: now,

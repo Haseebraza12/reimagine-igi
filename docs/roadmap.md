@@ -1,18 +1,22 @@
 # Desktop browser implementation roadmap
 
-Goal: one original-looking mission running locally in a desktop browser from
-the player's own game files, then broader compatibility. The supplied
-installation contains only `missions/location0/level1` ("Trainyard"): it is
-the one-mission build (its DefineMission has no next mission,
-MISSION_NEXT_MISSION_UNDEFINED, although missions.res names all 14).
+Goal: the game's missions, original-looking, running locally in a desktop
+browser from the player's own game files. Two builds were available:
+`Game Files/` is the one-mission build (only `missions/location0/level1`,
+Trainyard; the tests read its staged copy, `web-port/game-data-demo`), and
+`original/full-game/app` is the full game with all 14 missions and its own
+IGI.exe (E163), staged into `web-port/game-data` for the browser.
 
-**Other missions** — engine ready, untested: every loader takes the mission's
-paths from its DefineMission (`levelPathsFor`, `audioPathsFor`; IgiLevel.paths),
-`npm run stage` stages every mission folder of an installation and writes
-`game-data/missions.json`, the menus list the staged missions, and the game
-unloads one mission before loading another (checked by unloading and
-reloading Trainyard: no leftover scene objects). Missions 2–14 need their
-original files; none were available here.
+**Missions 2–14** — done, with listed gaps: every loader takes the mission's
+paths from its DefineMission (`levelPathsFor`, `audioPathsFor`), the full
+game's file differences are read (ILFF fonts E164, the 34-argument
+DefineGraph E165, terrain tolerance E166, the untagged AI graphs E168,
+constant-expression QVM arguments E179), and the 22 task types missions
+2–14 add over mission 1 are implemented from the full exe:
+[objects.md](objects.md), [world.md](world.md), [combat.md](combat.md),
+[vehicles.md](vehicles.md) "Full game". All 14 missions start from Free
+Mode and run their intro and gameplay in the browser smoke test
+(`?test&mission=N`).
 
 Status legend: **done** (implemented from recovered rules and checked
 against data), **partial**, **open**. Every recovered value is listed in
@@ -113,6 +117,9 @@ Gaps (documented in code and in the documents above):
   capability switches) are not, because what they change was not identified;
 - the menu music is played by the port, not by any code found in igi.exe
   ([audio.md](audio.md) "Menu music");
+- missions 2–14: the open points listed at the end of objects.md, world.md,
+  combat.md and vehicles.md "Full game" (the drawer's collision, rain cells in one sorted mesh, the M203 smoke
+  particles, the female soldiers' door / switch use, among others);
 
 ## 6. Optimise with measurements — partial
 

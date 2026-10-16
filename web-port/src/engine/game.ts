@@ -16,7 +16,7 @@
  * URL parameters (for automated checks; ignored otherwise):
  *   ?shot=x,y,z,yawDeg,pitchDeg  load straight into the level and render a fixed view
  *   ?shot=spawn                  render the player's spawn view
- *   ?test                        load straight into the level and expose
+ *   ?test[&mission=N]            load straight into the level (mission N, default 1) and expose
  *                                window.__igiTest (simulates without pointer lock)
  *   ?menutest                    normal boot to the main menu, exposing window.__igiMenu
  */
@@ -47,11 +47,15 @@ import { createGrenadeRenderer } from "./render/grenades";
 import { grenadeSystemOf } from "./combat/grenade";
 import { createPlayerBodyRenderer } from "./render/player-body";
 import { createMissionSystem } from "./mission/mission-system";
+import { attachWorldTasks, createWorldTasks } from "./world/world-tasks";
 import { loadLevel, missingRawFiles, type LoadedLevel } from "./level";
 import { TRI_BULLET, TRI_SIGHT } from "./world/collision";
 import { LookController } from "./look";
 import { readWeaponExtras } from "./combat/weapon-tags";
 import { LEVEL_RNG_SEED, LevelRng } from "./ai/rng";
+import { createCombatObjects } from "./combat/combat-objects";
+import { isSoldierTaskType } from "../loaders/soldier-types";
+import { createCombatModelRenderer } from "./render/combat-models";
 
 export interface Game {
   stop(): void;
@@ -73,6 +77,8 @@ declare global {
       fire(down: boolean): void;
       /** The audio system (mixer, sound events) for inspection. */
       audio: ReturnType<typeof createIgiAudio>;
+      /** The combat task objects (stationary guns, turrets, projectiles) for inspection. */
+      combat: ReturnType<typeof createCombatObjects>;
       /** Unload the mission and load `id` again from scratch (the mission-switch path), then reset it. */
       reloadMission(id?: number): Promise<void>;
     };
@@ -173,12 +179,16 @@ export function createGame(canvas: HTMLCanvasElement): Game {
   const weaponSystem = createWeaponSystem(ctx);
   const enemyManager = createEnemyManager(ctx);
   const mission = createMissionSystem(ctx);
+  // combat: GuardGenerator, MineField, StationaryGun, AIStationaryGun(Holder), M203 / RPG projectiles (combat/combat-objects.ts).
+  const combat = createCombatObjects(ctx, mission);
   const audio = createIgiAudio(ctx, { rng: ctx.rng });
   const effects = createEffects(ctx);
   // Weapon / ammo pickups (render/pickups.ts): the gun body or ammo model, vertex-lit, no animation.
   const pickupRenderer = createPickupRenderer(ctx, scene);
   // Thrown grenades in flight (135_01_1, vertex-lit; combat/grenade.ts).
   const grenadeRenderer = createGrenadeRenderer(ctx, scene);
+  // combat: the stationary guns' and turrets' gun models, M203 grenades and RPG missiles (render/combat-models.ts).
+  const combatModels = createCombatModelRenderer(ctx, scene);
   /**
    * The player's blob shadow [recovered]: every human gets one (FUN_0045d850 -> FUN_004d7960), and
    * its draw (FUN_004d7670) skips nobody, so the player sees it in first person too. It is drawn
@@ -239,6 +249,37 @@ export function createGame(canvas: HTMLCanvasElement): Game {
       slot.yaw = yaw;
     }
   };
+  /**
+   * Vehicle sounds (world/vehicles.ts sounds()): each Heli / Plane / Car runs its group
+   * ("helicopter_1", "su27", the car type's +0x262 group) as a child of the vehicle with its
+   * per-tick parameter block (thrust, playing[, speed x 0.001]) unless "Play sound" evaluates to
+   * 0 (FUN_004316d0, FUN_00433690, FUN_0042e320; started once by FUN_004e6b00) [recovered]. A
+   * vehicle out of the world (its container stopped) is not updated and keeps no voice [inferred].
+   */
+  const vehicleSounds = { level: null as unknown, objects: new Map<number, ReturnType<typeof audio.objectSound>>() };
+  const updateVehicleSounds = () => {
+    const vehicles = mission.vehicles;
+    const level = ctx.level;
+    if (!vehicles || !level) return;
+    if (vehicleSounds.level !== level) {
+      for (const o of vehicleSounds.objects.values()) o?.dispose();
+      vehicleSounds.objects.clear();
+      vehicleSounds.level = level;
+    }
+    for (const v of vehicles.sounds()) {
+      const o = level.originIgi;
+      const at: Vec3 = [(v.position[0] - o[0]) / 4096, (v.position[2] - o[2]) / 4096, -(v.position[1] - o[1]) / 4096];
+      const known = vehicleSounds.objects.has(v.key);
+      const obj = vehicleSounds.objects.get(v.key) ?? null;
+      if (!v.on || !mission.inWorldNode(v.key)) {
+        obj?.dispose();
+        vehicleSounds.objects.delete(v.key);
+        continue;
+      }
+      if (obj && obj.alive) obj.update(at, v.vars);
+      else if (!known || obj) vehicleSounds.objects.set(v.key, audio.objectSound(v.group, at, v.vars)); // null: no such group (t80_sounds)
+    }
+  };
   // The player's own body: drawn outside view mode 1 and under cut-scene cameras (FUN_0045ddd0).
   const playerBody = createPlayerBodyRenderer(ctx, scene);
   const updatePlayerBody = () => {
@@ -262,7 +303,8 @@ export function createGame(canvas: HTMLCanvasElement): Game {
   // Smoke tasks (the locomotives' exhaust, fx/smoke-emitter.ts): they follow their train.
   const smokeEmitters = createSmokeEmitters({
     runtime: () => mission.runtime,
-    trainPose: (node) => mission.vehicles?.trainPoses(node)?.[0] ?? null,
+    // Any vehicle parent (train locomotive, heli, car, plane: world/vehicles.ts nodePose).
+    trainPose: (node) => mission.vehicles?.nodePose(node) ?? null,
     particles: () => effects.particles,
     particleRng: () => effects.particleRng,
     originIgi: () => ctx.level?.originIgi ?? [0, 0, 0],
@@ -270,6 +312,14 @@ export function createGame(canvas: HTMLCanvasElement): Game {
   // Object damage and explosions (glass, barrels, terminals, cameras; docs/damage.md).
   const damage = createDamageSystem(ctx);
   attachDamageSystem(ctx, damage);
+  // Rotating dishes, alarm lights, sirens and rain / snow (world/world-tasks.ts).
+  const worldTasks = createWorldTasks(ctx, {
+    runtime: () => mission.runtime,
+    world: () => loaded?.world ?? null,
+    audio: () => audio,
+    inWorldNode: (node) => mission.inWorldNode(node),
+  });
+  attachWorldTasks(ctx, worldTasks);
   const hud = createHud(ctx, {
     source: raw,
     // The damage tint's (rand + 1) x 0.4 comes from the level RNG (FUN_00415c20 at 0x4125a8).
@@ -440,10 +490,13 @@ export function createGame(canvas: HTMLCanvasElement): Game {
 
     if (ctx.level) mission.start(ctx.level);
     mission.attachWorld(loaded?.world ?? null);
+    combat.reset();
+    combat.attachWorld(loaded?.world ?? null);
     smokeEmitters.reset();
     // Every object intact, glass thresholds redrawn; the bridge writes into the fresh runtime.
     damage.reset();
     damage.setMissionBridge(mission.runtime ? missionRuntimeBridge(mission.runtime) : null);
+    worldTasks.reset();
     // Cheat All Weapons: armed at every (re)start.
     if (ctx.cheats?.allWeapons) giveAllWeapons();
   }
@@ -492,6 +545,7 @@ export function createGame(canvas: HTMLCanvasElement): Game {
     // The mission's MISSION:sounds listing: the staging manifest's, else level 1's built-in list.
     audioPaths = audioPathsFor(location.levelDir, info?.soundFiles ?? (missionId === 1 ? LEVEL1_SOUND_FILES : []));
     await damage.load(raw, ctx.level!, loaded.world);
+    await worldTasks.load(raw, ctx.level!);
     // Zoom tags / task types of weaponconfig.qvm (combat/weapon-tags.ts), and the arms bound to the view object.
     weaponSystem.setWeaponExtras(readWeaponExtras(await raw.readBinary(ctx.level!.paths.weaponConfig)));
     loaded.viewModels.bind(ctx.firstPerson ?? null);
@@ -594,8 +648,9 @@ export function createGame(canvas: HTMLCanvasElement): Game {
     try {
       if (shot || testMode) {
         hud.showOverlay("Loading Project I.G.I. — Mission 1…");
-        await ensureLoaded(() => {});
+        // ?mission=N (automation): load that staged mission instead of mission 1.
         await hud.ready.catch(() => {});
+        await ensureLoaded(() => {}, Math.max(1, Number(params.get("mission")) || 1));
         hud.showOverlay(null);
         resetMission();
         if (shot) {
@@ -623,12 +678,14 @@ export function createGame(canvas: HTMLCanvasElement): Game {
               mission.tick();
               smokeEmitters.tick();
               damage.endTick();
+              worldTasks.tick();
               ctx.tick++;
               ctx.appTick = (ctx.appTick ?? 0) + 1;
             }
           },
           fire: (down) => input.setFiring(down),
           audio,
+          combat,
           reloadMission: async (id = 1) => {
             setRunning(false);
             missionActive = false;
@@ -765,6 +822,8 @@ export function createGame(canvas: HTMLCanvasElement): Game {
               // View mode 3 (attached / using): the mouse turns the third-person orbit (FUN_00481660).
               look.reset();
               cameraController.orbitTick(mx, my, input.lookInverted, mouseSensitivity);
+              // Movement state 33: the mouse and Fire are the StationaryGun user's channels 0 / 1 / 6.
+              if (combat.stationaryGuns.playerGun) combat.stationaryGuns.setPlayerInput(mx, my, input.lookInverted, mouseSensitivity, input.isFiring);
             }
             if (input.actionPressed("Reload")) weaponSystem.reload();
             // FUN_00410a30: no weapon selection while the map computer exists (FUN_0046abe0).
@@ -803,7 +862,7 @@ export function createGame(canvas: HTMLCanvasElement): Game {
           if (type === "HumanPlayer") {
             playerTicked = true;
             playerStep();
-          } else if (type === "HumanSoldier" || type === "HumanAI") enemyManager.tickNode(taskId, type, nodeIndex);
+          } else if (isSoldierTaskType(type) || type === "HumanAI") enemyManager.tickNode(taskId, type, nodeIndex);
         });
         mission.tick();
         mission.setNodeTick(null);
@@ -813,7 +872,10 @@ export function createGame(canvas: HTMLCanvasElement): Game {
         enemyManager.endNodeTick(!walked);
         // Explosions created this tick go off at its end (their first update, last children of Dynamic).
         damage.endTick();
+        // Dish poses, lamp models / reflectors, siren sounds, rain steps of this tick (world/world-tasks.ts).
+        worldTasks.tick();
         updateCameraBeeps();
+        updateVehicleSounds();
         updatePlayerShadow();
         if (inControl()) tickViewModels();
         // Mixer update with the camera as the microphone (every 30 Hz tick).
@@ -836,6 +898,7 @@ export function createGame(canvas: HTMLCanvasElement): Game {
         loaded.environment.update(dt, camera);
         pickupRenderer.update(playerController.pickups.items, (p) => playerController.pickups.inWorld(p));
         grenadeRenderer.update(grenadeSystemOf(ctx).grenades);
+        combatModels.update(combat.models());
         updatePlayerBody();
         const computerOpen = hud.isMapComputerOpen();
         const mapView = computerOpen ? hud.mapComputerView() : null;
@@ -920,9 +983,12 @@ export function createGame(canvas: HTMLCanvasElement): Game {
       effects.clear();
       pickupRenderer.dispose();
       grenadeRenderer.dispose();
+      combatModels.dispose();
+      combat.dispose();
       playerBody.dispose();
       playerShadow?.dispose();
       damage.dispose();
+      worldTasks.dispose();
       loaded?.dispose();
       audio.dispose();
       canvas.removeEventListener("click", onClick);

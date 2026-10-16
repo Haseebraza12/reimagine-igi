@@ -35,6 +35,13 @@
  *   - Switch (LAB_00444610): a bullet sets isDestroyed when "Destructable".
  *   - Car (0x42ede0): only explosions from weapon 12 (LAW 80) set its
  *     destroyed flag. Buildings, doors, EditRigidObj, trains: no handlers.
+ *   - Siren (full exe FUN_00449360, an ExplodeObject subclass): the inherited
+ *     handlers; its update is loaders/objects/siren.ts.
+ *   - AlarmLight (full exe LAB_0043a5e0 / FUN_0043a660 -> FUN_0043a5f0): any
+ *     bullet hit, or an explosion with a non-zero factor at the lamp origin,
+ *     destroys it once: explosion (0.05 damage, 1 m, falloff 0, scorch 2048,
+ *     5 fragments, 2 fireballs, "Explode sound", AI range 5 m), isDestroyed,
+ *     model "Destroyde model" (applied by world/world-tasks.ts).
  *
  * Tick order (igi.exe walks the task tree; the objects above sit in their
  * buildings before the humans, explosions are appended to the Dynamic task):
@@ -46,8 +53,9 @@
  */
 import * as THREE from "three";
 import type { IAssetSource, Vec3 } from "../../contracts";
-import type { IgiLevel, IgiTask, LevelInstance, LevelModel } from "../../loaders";
+import { EXPLODE_OBJECT_TYPES, type IgiLevel, type IgiTask, type LevelInstance, type LevelModel } from "../../loaders";
 import { loadDamageModelData, type DamageModelData, type ExplodeMagicDef, type MefBounds } from "../../loaders/damage-data";
+import { ALARM_LIGHT_EXPLOSION, ALARM_LIGHT_MODEL_PARAMS, alarmLightDestroy } from "../../loaders/objects/alarm-light";
 import { x87Fistp, x87StoreF32 } from "../../loaders/x87";
 import { LevelRng } from "../ai/rng";
 import type { GameContext } from "../context";
@@ -144,6 +152,10 @@ export interface ExplosiveBridge {
   setCameraExploded(node: number): void;
   /** Switch isDestroyed (+0x1c2). */
   setSwitchDestroyed?(node: number): void;
+  /** AlarmLight FUN_0043a5f0's state part (isDestroyed, model); false when it was destroyed already. */
+  destroyAlarmLight?(node: number): boolean;
+  /** RotatingObject destroyed (+0x1a8): it spins down (LAB_00439750, Destructable only). */
+  setRotatingObjectDestroyed?(node: number): void;
   /** The task is in the world (+0x234; ConditionalContainers). */
   inWorld(node: number): boolean;
 }
@@ -200,7 +212,7 @@ interface SmokeTask {
   shade: boolean;
 }
 
-export type DamageKind = "glass" | "explodeMagic" | "explodeObject" | "scameraLens" | "switch" | "car";
+export type DamageKind = "glass" | "explodeMagic" | "explodeObject" | "scameraLens" | "switch" | "car" | "alarmLight" | "rotatingObject";
 
 interface DamageObject {
   kind: DamageKind;
@@ -299,19 +311,27 @@ export function damageModelNames(level: IgiLevel): { bounds: Set<string>; build:
   const bounds = new Set<string>();
   const build = new Set<string>([R.FIREBALL_MODEL, R.FRAGMENT_MODEL]);
   for (const inst of level.instances) {
-    if (inst.glass || inst.magicType === "TASKTYPE_EXPLODEMAGICOBJ" || ["ExplodeObject", "Terminal", "AlarmControl", "SCameraControl", "SCamera", "Car"].includes(inst.taskType)) {
+    // (the AlarmLight reflector: its magic vertex 0 places the glow, world/world-tasks.ts)
+    if (inst.glass || inst.magicType === "TASKTYPE_EXPLODEMAGICOBJ" || inst.magicType === "TASKTYPE_ALARMLIGHTREFLECTOR" || EXPLODE_OBJECT_TYPES.has(inst.taskType) || ["SCamera", "Car", "AlarmLight"].includes(inst.taskType)) {
       bounds.add(inst.model.toLowerCase());
     }
   }
   for (const task of level.tasks) {
     const p = task.params;
-    for (const key of ["Model", "Destroyed model", "Camera Model", "Camera Destroyed Model", "Holder Model"]) {
+    for (const key of ["Model", "Destroyed model", "Camera Model", "Camera Destroyed Model", "Holder Model", "Off model", "On model", "Destroyde model"]) {
       const v = p[key];
       if (typeof v === "string" && v) bounds.add(v.toLowerCase());
     }
-    if (["ExplodeObject", "Terminal", "AlarmControl", "SCameraControl"].includes(task.type)) {
+    if (EXPLODE_OBJECT_TYPES.has(task.type)) {
       const d = p["Destroyed model"];
       if (typeof d === "string" && d) build.add(d.toLowerCase());
+    }
+    // AlarmLight model swaps (world/world-tasks.ts): every model field it can show.
+    if (task.type === "AlarmLight") {
+      for (const key of ALARM_LIGHT_MODEL_PARAMS) {
+        const m = p[key];
+        if (typeof m === "string" && m) build.add(m.toLowerCase());
+      }
     }
     if (task.type === "SCamera") {
       const d = p["Camera Destroyed Model"];
@@ -319,8 +339,20 @@ export function damageModelNames(level: IgiLevel): { bounds: Set<string>; build:
     }
   }
   for (const s of level.soldiers) bounds.add(s.model.toLowerCase());
+  // combat: magic vertices of the stationary guns' holders (use point) and of the gun models (muzzle = vertex 2).
+  for (const task of level.tasks) {
+    if (task.type !== "StationaryGun" && task.type !== "AIStationaryGunHolder") continue;
+    const v = task.params["Holder model"];
+    if (typeof v === "string" && v) bounds.add(v.toLowerCase());
+  }
+  for (const parts of level.guns.values()) for (const part of parts) if (part.role === "body") bounds.add(part.model.toLowerCase());
   // Thrown grenades (combat/grenade.ts): contact points = magic vertices, explosion radius = origin radius.
   for (const t of level.vehicles?.types ?? []) if (t.taskType === "TASKTYPE_GRENADE" && t.model) bounds.add(t.model.toLowerCase());
+  // Car wrecks (type config +0x2b0, e.g. APC 601_08_1, T80 614_08_1): the exploded car's model (world/vehicles.ts).
+  for (const t of level.vehicles?.types ?? []) {
+    const wreck = t.taskType === "TASKTYPE_CAR" ? (t.config as { wreckModel?: string }).wreckModel : undefined;
+    if (wreck) build.add(wreck.toLowerCase());
+  }
   return { bounds, build };
 }
 
@@ -424,6 +456,7 @@ export function createDamageSystem(ctx: GameContext, options: DamageSystemOption
       const order = node * 1000;
       switch (task.type) {
         case "ExplodeObject": case "Terminal": case "AlarmControl": case "SCameraControl":
+        case "Generator": case "Radio": case "GenericTBA": case "PlaceExplosiveTBA": case "Siren":
           add({
             kind: "explodeObject", node, instance: rootOf.get(node) ?? -1, order, damage: 0,
             // Compile (LAB_0047ffb0): +0x1ec = "Damage scale" (+0x1f0).
@@ -443,6 +476,14 @@ export function createDamageSystem(ctx: GameContext, options: DamageSystemOption
         }
         case "Switch":
           if (task.params["Destructable"] === true) add({ kind: "switch", node, instance: rootOf.get(node) ?? -1, order, damage: 0, threshold: 0, flag: false, done: false, model: str(task, "Off model"), task });
+          break;
+        case "RotatingObject": // LAB_00439750: a bullet handler only (not in the explosion list); Destructable (default 1)
+          if (task.params["Destructable"] !== false && task.params["Destructable"] !== 0) {
+            add({ kind: "rotatingObject", node, instance: rootOf.get(node) ?? -1, order, damage: 0, threshold: 0, flag: false, done: false, model: str(task, "Model"), task });
+          }
+          break;
+        case "AlarmLight": // FUN_0043a0e0: in the damage list from create
+          add({ kind: "alarmLight", node, instance: rootOf.get(node) ?? -1, order, damage: 0, threshold: 0, flag: false, done: false, model: str(task, "Off model"), task });
           break;
         case "Car":
           add({ kind: "car", node, instance: rootOf.get(node) ?? -1, order, damage: 0, threshold: 0, flag: false, done: false, model: str(task, "Model"), task });
@@ -481,7 +522,9 @@ export function createDamageSystem(ctx: GameContext, options: DamageSystemOption
     const task = o.task;
     const destroyed = str(task, "Destroyed model");
     const model = destroyedModel(destroyed);
-    if (model && o.instance >= 0) {
+    // The L11 sirens name their own model: setting the model it already shows changes nothing
+    // (the lightmapped instance stays) [inferred].
+    if (model && o.instance >= 0 && destroyed.toLowerCase() !== o.model.toLowerCase()) {
       world?.setInstanceModel(o.instance, model);
       o.model = destroyed;
     }
@@ -498,6 +541,29 @@ export function createDamageSystem(ctx: GameContext, options: DamageSystemOption
     });
     o.exploded = true;
     o.done = true;
+  }
+
+  /**
+   * FUN_0043a5f0 (full exe), once: explosion at the lamp origin, isDestroyed, the "Destroyde
+   * model" (the runtime state; world/world-tasks.ts shows it and stops drawing the reflector).
+   */
+  function destroyAlarmLight(o: DamageObject): void {
+    if (o.flag) return;
+    if (bridge?.destroyAlarmLight && !bridge.destroyAlarmLight(o.node)) {
+      o.flag = true;
+      o.done = true;
+      return;
+    }
+    o.flag = true;
+    o.done = true;
+    const e = ALARM_LIGHT_EXPLOSION;
+    queue(R.makeExplosion(rng(), {
+      position: taskPosition(o.task), count: e.count, interval: e.interval, damage: e.damage, radius: e.radius, falloff: e.falloff,
+      scorch: e.scorch, fragments: e.fragments, fireballs: e.fireballs, sound: str(o.task, "Explode sound"), aiRange: e.aiRange,
+      fragmentModel: e.fragmentModel,
+    }));
+    const destroyed = str(o.task, "Destroyde model");
+    ctx.events.emit(DAMAGE_EVENTS.ObjectDestroyed, { node: o.node, type: "AlarmLight", instance: o.instance, destroyedModel: destroyedModel(destroyed) ? destroyed : null });
   }
 
   function taskPosition(task: IgiTask | undefined): V3 {
@@ -580,6 +646,11 @@ export function createDamageSystem(ctx: GameContext, options: DamageSystemOption
         const acc = R.accumulate(o.damage, f, o.threshold);
         o.damage = acc.stored;
         if (acc.reached) o.flag = true;
+        return;
+      }
+      case "alarmLight": { // FUN_0043a660: any non-zero factor at the lamp origin (+0x20)
+        if (o.flag) return;
+        if (R.explosionFactor(rec, taskPosition(o.task), modelRadius(o.model)) !== 0) destroyAlarmLight(o);
         return;
       }
       case "car": { // 0x42ede0: only explosions of weapon 12 count
@@ -762,6 +833,12 @@ export function createDamageSystem(ctx: GameContext, options: DamageSystemOption
         case "switch": // LAB_00444610: "Destructable" sets isDestroyed
           bridge?.setSwitchDestroyed?.(o.node);
           return true;
+        case "alarmLight": // LAB_0043a5e0: any bullet destroys it
+          destroyAlarmLight(o);
+          return true;
+        case "rotatingObject": // LAB_00439750: destroyed = 1 (the targets go to 0, it spins down)
+          bridge?.setRotatingObjectDestroyed?.(o.node);
+          return true;
         default:
           return true; // cars: no bullet handler
       }
@@ -906,6 +983,14 @@ export function missionRuntimeBridge(
     setSwitchDestroyed(node) {
       const s = state(node);
       if (s) s.isDestroyed = 1;
+    },
+    destroyAlarmLight(node) {
+      const s = state(node);
+      return s ? alarmLightDestroy(s) : false;
+    },
+    setRotatingObjectDestroyed(node) {
+      const s = state(node);
+      if (s) s.destroyed = 1;
     },
     inWorld,
   };

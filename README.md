@@ -3,14 +3,14 @@
 **Project I.G.I. in a web browser: a hobby project by Haseeb ur Rehman.**
 
 Research toward a desktop-browser reimplementation of Project I.G.I., using the
-supplied installation as the reference. The aim is to preserve the original
-visual style and eventually play one mission in a browser.
+owner's installation as the reference. The aim is to preserve the original
+visual style and play the game's missions in a browser.
 
 ## About this project
 
 re-igi is a personal, non-commercial hobby project by **Haseeb ur Rehman**.
 It studies how the 2000 PC game *Project I.G.I.: I'm Going In* works and
-rebuilds its first mission so that it runs in a web browser. It is made for
+rebuilds its missions so that they run in a web browser. It is made for
 learning and for fun, not for sale.
 
 It is an unofficial fan project. It is not affiliated with, endorsed by or
@@ -37,9 +37,12 @@ supported by Innerloop Studios, Eidos Interactive or any current owner of the
 
 ## Status
 
-Mission 1 ("Trainyard") is playable in the browser, decoded at runtime from
-your own installation. The port follows igi.exe's own rules, recovered by
-static analysis and recorded with their evidence in
+All 14 missions of the full game load and play in the browser, decoded at
+runtime from your own installation (Trainyard, SAM Base, Military Airbase,
+GOD, Radar Base, Get Priboi, Border Crossing, Re-supply, Missile Trainyard,
+Defend Priboi, Eagle's Nest I and II, Nuclear Infiltration, Finding the
+bomb). The port follows igi.exe's own rules, recovered by static analysis
+and recorded with their evidence in
 [docs/evidence-ledger.md](docs/evidence-ledger.md):
 
 - **World**: the octree terrain with the exe's per-frame LOD walk, vertex
@@ -70,6 +73,19 @@ static analysis and recorded with their evidence in
   cut-scenes with letterbox, subtitles and the camera filters, doors,
   alarms, security cameras, radio messages, objectives, mission complete /
   failed).
+- **Missions 2–14** add their own object types, each from the exe's code
+  ([docs/objects.md](docs/objects.md), [docs/world.md](docs/world.md),
+  [docs/combat.md](docs/combat.md), [docs/vehicles.md](docs/vehicles.md)):
+  elevators that carry you between floors, generators and radios, cabinets
+  to search, C4 to pick up and plant, the binocular view of the mission 5
+  intro; rain and snow, turning radar dishes, alarm lights and sirens,
+  terrain cut away under buildings; mounted machine guns you can man (and
+  soldiers who man them), ceiling turrets, minefields, guard posts that send
+  reinforcements, the M16A2's M203 grenades, the SPAS-12, the RPG soldier and
+  the female soldiers of the last mission; SU-27 jets with their landing gear
+  and flight physics, AI-driven APCs, tanks and cars with their turrets, the
+  Mil helicopter's gun and rocket pods, rockets on their recovered flight
+  physics, wrecks, and the trains of missions 9 and 10.
 - **HUD, menus and sound**: the original fonts, sprites, menus and their
   sub-screens, the map computer, radio messages; the game's software 3D
   sound mixer with its sample bank.
@@ -80,19 +96,17 @@ static analysis and recorded with their evidence in
 Output is not bit-identical to the PC game: WebGL is not Direct3D 7 and the
 browser mixes the sound. The data, parameters and logic are the game's own.
 
-**Missions.** The engine loads any mission from its own `mission.qvm`
-(DefineMission: level folder, location folder, name, picture). The supplied
-installation is the one-mission build: it has the files of mission 1
-(Trainyard) only, although `missions.res` names all 14. To play the others,
-point `npm run stage` at a complete, legally owned installation
-(`IGI_GAME_DIR=/path/to/IGI npm run stage`): it copies every
-`missions/locationN/levelM` folder it finds and lists them in
-`game-data/missions.json`, and they appear in Select Mission. Missions other
-than Trainyard have not been tested, because their files were not available.
+**Missions.** Each mission loads from its own `mission.qvm` (DefineMission:
+level folder, location folder, name, picture). `npm run stage` copies every
+`missions/locationN/levelM` folder of the installation it is pointed at and
+lists them in `game-data/missions.json`; Select Mission then offers them. A
+one-mission installation shows the others as "Mission Not Installed".
 
 Not yet reproduced (see [docs/roadmap.md](docs/roadmap.md)):
 - the intro movies (Indeo 5 video) are skipped;
 - the credits text (compiled into igi.exe, which is not staged);
+- a few details listed under "Open" in the docs above (for example the
+  drawer's collision);
 - nothing has been compared frame by frame with the running original.
 
 Original game files stay under `Game Files/`; tools only read them. Do not
@@ -114,8 +128,10 @@ npm run dev          # http://localhost:5173
 
 Open the page and choose **Play Project IGI**. A dialog in the game's own
 style asks for **Story Mode** (the missions you have reached, as in the
-original) or **Free Mode** (every installed mission, to play in any order;
-finishing one there does not move the story on). Then **Select Mission** →
+original) or **Free Mode** (all 14 missions of the game, with their own
+pictures and descriptions, to play in any order; finishing one there does not
+move the story on; a mission whose files are not installed shows "Mission Not
+Installed" instead of starting). Then **Select Mission** →
 **OK**, and **click** to capture the mouse. Esc breaks a cut-scene;
 otherwise it opens the pause menu.
 

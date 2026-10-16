@@ -12,6 +12,7 @@ __pycache__/
 node_modules/
 web-port/public/raw/
 web-port/game-data/
+web-port/game-data-demo/
 web-port/public/assets/
 web-port/public/generated/
 web-port/dist/

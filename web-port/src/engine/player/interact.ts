@@ -53,19 +53,29 @@ import {
   type IgiLevel,
   type IgiLevelPaths,
   type IgiTask,
+  type TaskPose,
 } from "../../loaders";
 import { numberParam, stringParam, vec3Param } from "../../loaders/tasks";
 import { wirePose, type WireModelInfo } from "../../loaders/wire";
 import { x87Fistp } from "../../loaders/x87";
+import { TRI_BULLET } from "../world/collision";
+import type { ObjectPresenter } from "../mission/object-presenter";
 import type { GameContext } from "../context";
 import { AI_NOISE, AttachController, type AttachHost, type LoopSound } from "./attach";
+import { cabinetAbort, cabinetSearched, finishTba, useObjectTick, type MissionRuntime } from "../../loaders";
+import { stationaryGunsOf } from "../combat/stationary-guns";
 import {
   USE_KIND,
   makeWire,
+  placeExplosiveStance,
   searchUseTarget,
+  tbaSprite,
   terminalStance,
+  timedUseStance,
   useIconOf,
   useKindOf,
+  worldPoint,
+  type TimedUseTarget,
   type DoorTarget,
   type FenceTarget,
   type Ladder,
@@ -163,6 +173,8 @@ export function interactionModels(level: IgiLevel): Set<string> {
     };
     if (t.type === "Wire" || t.type === "Door" || t.type === "Fence" || t.type === "Terminal" || t.type === "AlarmControl" || t.type === "SCameraControl") add("Model");
     if (t.type === "Switch") ["On model", "Off model", "On pressed model", "Off pressed model"].forEach(add);
+    // Full game: the cabinet / TBA use points and the GenericPickup touch radius (docs/objects.md).
+    if (t.type === "Cabinet" || t.type === "GenericTBA" || t.type === "PlaceExplosiveTBA" || t.type === "GenericPickup") add("Model");
   }
   for (const w of level.weapons.values()) if (w.gunModel) names.add(w.gunModel);
   // AmmoPickup touch radius: the DefineAmmoType model's (FUN_0046c350).
@@ -209,6 +221,16 @@ interface RuntimeLike {
   useDoor(nodeIndex: number): boolean;
   pickDoorLock(nodeIndex: number): void;
   evaluate(text: string): number;
+  behaviourState(index: number): Record<string, number>;
+  levelFlowTick(): number;
+}
+
+/** Engine hooks of the timed uses that reach outside the player (mission-system.ts). */
+export interface TimedUseHooks {
+  /** The eye -> P segment query of state 36 (FUN_004cc2a0 with filter 0x539548), IGI units. */
+  ray?(from: V3, to: V3): { point: V3; normal: V3 } | null;
+  /** Move a placed task (EditRigidObj) to an IGI pose: "Task ID to place" of state 36. */
+  placeTask?(taskId: number, position: V3, rotation: M3): void;
 }
 
 export interface InteractionOptions {
@@ -221,7 +243,21 @@ export interface InteractionOptions {
   doors?: boolean;
   /** Player body clips by id (default: parsed from the level's skeleton-0 animation file). */
   clips?: (id: number) => AnimClip | null;
+  /** State 36's ray and charge placement. */
+  hooks?: TimedUseHooks;
 }
+
+/** A body clip a timed use plays (FUN_00489ea0(human, clip, loop, blend seconds)). */
+export interface UseClip {
+  id: number;
+  loop: boolean;
+  blend: number;
+}
+
+/** Cabinet search clips (FUN_0040c2f0 / LAB_0040c510): open, search loop, close [recovered, full exe]. */
+export const CABINET_CLIPS = { open: 84, search: 85, close: 83 } as const;
+/** Clip 83's lead: int(duration x 1/4800 x 30) ticks before the limit (f32 0x533430 = 1/4800, 0x5333bc = 30). */
+const CLIP_SECONDS_PER_ANIM_TICK = Math.fround(1 / 4800);
 
 export interface UseOutcome {
   kind: UseKind;
@@ -236,10 +272,17 @@ export interface InteractionController {
   readonly target: UseObject | null;
   /** HUD action icon of the target ("a_ladder.spr" ...), null when none. */
   readonly actionIcon: string | null;
-  /** A timed use (hacking / lock picking) runs: counter / limit (the HUD progress bar, player +0xd64 / +0xd60). */
+  /** A timed use (hacking / lock picking / search / TBA) runs: counter / limit (the HUD progress bar, player +0xd64 / +0xd60). */
   readonly progress: number | null;
-  /** In use (+0x7b8): attached, hacking or picking. */
-  readonly busy: "attached" | "hacking" | "picking" | null;
+  /**
+   * In use (+0x7b8): attached, hacking, picking, searching (cabinet, state 31), activating (TBA 35 /
+   * explosive 36), or "gun": on a StationaryGun (movement state 33).
+   */
+  readonly busy: "attached" | "hacking" | "picking" | "searching" | "activating" | "gun" | null;
+  /** The player state of the running timed use (30 / 31 / 32 / 35 / 36), null otherwise. */
+  readonly useState: number | null;
+  /** The body clip the timed use starts with. */
+  readonly useClip: UseClip | null;
   /** Yaw and pitch locked (+0x510, camera +0x138): attached or a timed use. */
   readonly viewLocked: boolean;
   /** The weapon is holstered (+0xd44). */
@@ -253,8 +296,13 @@ export interface InteractionController {
   search(grounded: boolean): void;
   /** Activate dispatch (FUN_0040ead0 -> FUN_0040ce30); returns the use or null. */
   activate(input: { held: boolean; blocked: boolean; pelvis: V3 }): UseOutcome | null;
-  /** One tick of a timed use; true while it continues (the body stays put). `pelvis` in IGI units. */
-  tickTimedUse(input: { held: boolean; dead: boolean; pelvis: V3 }): boolean;
+  /**
+   * One tick of a timed use; true while it continues (the body stays put). `pelvis` in IGI units;
+   * `clipFinished` = the body's finished flag (condition bit 1), `play` switches the body clip.
+   */
+  tickTimedUse(input: { held: boolean; dead: boolean; pelvis: V3; clipFinished?: boolean; play?: (clip: UseClip) => void }): boolean;
+  /** The first anim event trigger of the body's last advance (human+0x538), -1 when none: the cabinet's drawer. */
+  setTrigger(trigger: number): void;
   /** Release the active object (FUN_00462260): search back on, Activate latched until released. */
   release(): void;
   /** Stance of the current timed use (IGI pelvis before the ground snap, heading). */
@@ -279,6 +327,12 @@ export function createInteractions(ctx: GameContext, options: InteractionOptions
   let limit = 0;
   let loop: LoopSound | null = null;
   let stance: { position: V3; heading: number } | null = null;
+  let useState: number | null = null;
+  let useClip: UseClip | null = null;
+  /** Cabinet clip phase (+0xd74): 0 open, 1 search loop, 2 close. */
+  let phase = 0;
+  /** human+0x538 of the last body advance. */
+  let trigger = -1;
 
   const level = () => ctx.level;
   const runtime = (): RuntimeLike | null => (ctx.systems.tasks as unknown as { runtime?: RuntimeLike | null } | null)?.runtime ?? null;
@@ -396,6 +450,12 @@ export function createInteractions(ctx: GameContext, options: InteractionOptions
         case "Terminal":
         case "AlarmControl":
         case "SCameraControl":
+        case "Cabinet":
+        case "GenericTBA":
+        case "PlaceExplosiveTBA":
+          staticObjects.push({ kind: "dynamic", nodeIndex: index, type: task.type });
+          break;
+        case "StationaryGun": // combat: use kind 6 (FUN_00474e30 / FUN_00474ed0)
           staticObjects.push({ kind: "dynamic", nodeIndex: index, type: task.type });
           break;
       }
@@ -417,28 +477,47 @@ export function createInteractions(ctx: GameContext, options: InteractionOptions
     return !!(rt && expr && expr.trim() && rt.evaluate(expr) !== 0);
   };
 
+  /** The motion of an elevator carrying task node `node` this tick (mission-system objects), or null. */
+  function carried(node: number): ((pose: TaskPose) => TaskPose) | null {
+    return (ctx.systems.tasks as unknown as { objects?: ObjectPresenter } | null)?.objects?.carried(node) ?? null;
+  }
+
   /** Resolve a dynamic entry to its current use object (null when it takes no part). */
   function dynamicObject(rt: RuntimeLike, nodeIndex: number, type: string): UseObject | null {
     const node = rt.tasks.nodes[nodeIndex];
     if (!node) return null;
     const task = node.task;
     const state = rt.nodeState(nodeIndex);
+    if (type === "StationaryGun") {
+      // combat: a free gun's use point and object matrix (combat/stationary-guns.ts).
+      const c = stationaryGunsOf(ctx)?.candidates().find((x) => x.gun.node === nodeIndex);
+      return c ? { kind: "stationaryGun", taskId: node.id, nodeIndex, point: c.point, rotation: c.matrix } : null;
+    }
     if (type === "Door") {
       const door = rt.tasks.doors.find((d) => d.nodeIndex === nodeIndex);
       const s = door ? rt.doorStateAt(nodeIndex) : undefined;
       const info = door ? models?.get(door.model) : undefined;
       if (!door || !s || !info) return null;
-      const pose = doorPose(door, s);
+      const own = doorPose(door, s);
+      const pose = carried(nodeIndex)?.(own) ?? own;
       const obj: DoorTarget = {
         kind: "door", taskId: door.id, nodeIndex, position: [...pose.position] as V3, rotation: [...pose.matrix] as M3,
         points: info.points, locked: s.isLocked, pickable: door.pickable,
       };
       return obj;
     }
-    const position = vec3Param(task, "Position");
+    let position: readonly number[] | null = vec3Param(task, "Position");
     if (!position) return null;
+    if (type === "Cabinet" || type === "GenericTBA" || type === "PlaceExplosiveTBA") return timedTarget(rt, node, position);
     const angles = vec3Param(task, "Orientation") ?? [0, 0, 0];
-    const rotation = eulerToMatrix(angles[0], angles[1], angles[2]) as M3;
+    let rotation = eulerToMatrix(angles[0], angles[1], angles[2]) as M3;
+    // A switch riding an elevator (0x547f40): where the car has taken it.
+    const carry = carried(nodeIndex);
+    if (carry) {
+      const pose = carry({ position: [...position] as V3, matrix: rotation });
+      position = pose.position;
+      rotation = pose.matrix as M3;
+    }
     if (type === "Switch") {
       const on = Number(state.isOn ?? 0) !== 0;
       const model = stringParam(task, on ? "On model" : "Off model");
@@ -458,6 +537,30 @@ export function createInteractions(ctx: GameContext, options: InteractionOptions
       enabled: Number(state.isOn ?? 1) !== 0, hackSeconds: numberParam(task, "Hack Time (s)") ?? 4,
     };
     return obj;
+  }
+
+  /** Cabinet (Orientation = one yaw angle, Rz [Rz inferred]), GenericTBA / PlaceExplosiveTBA (Euler). */
+  function timedTarget(rt: RuntimeLike, node: RuntimeLike["tasks"]["nodes"][number], position: readonly number[]): TimedUseTarget {
+    const task = node.task;
+    const state = rt.nodeState(node.index);
+    const model = stringParam(task, "Model");
+    const points = (model ? models?.get(model)?.points : undefined) ?? [];
+    if (node.type === "Cabinet") {
+      return {
+        kind: "cabinet", taskId: node.id, nodeIndex: node.index, position: [...position] as V3,
+        rotation: eulerToMatrix(0, 0, numberParam(task, "Orientation") ?? 0) as M3, points, enabled: true,
+        seconds: numberParam(task, "Search Time (s)") ?? 4, anim: -1, icon: "action_searchcab.spr", range: 0, placeTaskId: -1,
+      };
+    }
+    const angles = vec3Param(task, "Orientation") ?? [0, 0, 0];
+    return {
+      kind: node.type === "PlaceExplosiveTBA" ? "placeExplosive" : "tba", taskId: node.id, nodeIndex: node.index,
+      position: [...position] as V3, rotation: eulerToMatrix(angles[0], angles[1], angles[2]) as M3, points,
+      enabled: Number(state.isOn ?? 1) !== 0, seconds: numberParam(task, "Activate Time (s)") ?? 4,
+      anim: numberParam(task, "Activate Anim") ?? -1, icon: tbaSprite(stringParam(task, "Click to select sprite")),
+      range: Math.fround(Math.fround(numberParam(task, "Activate radius (meters)") ?? 0.75) * 4096),
+      placeTaskId: numberParam(task, "Task ID to place") ?? -1,
+    };
   }
 
   function useList(): UseObject[] {
@@ -514,6 +617,11 @@ export function createInteractions(ctx: GameContext, options: InteractionOptions
       ladderSide = r.ladderSide;
     }
     if (active && active.kind === "terminal") runtime()?.useTerminal(active.taskId);
+    // Cabinet / TBA active call (FUN_00444940 / LAB_004484f0): in use; the cabinet reads human+0x538.
+    const rt = runtime();
+    if (active && rt && (active.kind === "cabinet" || active.kind === "tba" || active.kind === "placeExplosive")) {
+      useObjectTick(rt as unknown as MissionRuntime, active.nodeIndex, trigger);
+    }
   }
 
   function release(): void {
@@ -522,17 +630,57 @@ export function createInteractions(ctx: GameContext, options: InteractionOptions
     active = null;
     latch = true;
     stance = null;
+    useState = null;
+    useClip = null;
     loop?.stop();
     loop = null;
   }
 
-  function startTimed(kind: "hacking" | "picking", seconds: number, sound: string, at: { position: V3; heading: number } | null): void {
+  function startTimed(kind: "hacking" | "picking" | "searching" | "activating", seconds: number, sound: string, at: { position: V3; heading: number } | null): void {
     busy = kind;
     counter = 0;
     limit = x87Fistp(Math.fround(seconds) * 30);
     stance = at;
+    phase = 0;
     loop?.stop();
-    loop = host.loopOnPlayer(sound);
+    loop = sound ? host.loopOnPlayer(sound) : null;
+    useState = kind === "hacking" ? 32 : kind === "picking" ? 30 : kind === "searching" ? 31 : active?.kind === "placeExplosive" ? 36 : 35;
+    // Body clips the use states play directly (FUN_004882c0, not the slot table) [recovered]:
+    // FUN_0040bfe0 / FUN_0040c780: 89 picklock / 90 typecomp looped; FUN_0040c2f0: 84 once;
+    // FUN_0040cf70 / FUN_0040d180: the Activate Anim looped; all without a blend.
+    const anim = active && "anim" in active ? active.anim : -1;
+    useClip = kind === "picking" ? { id: 0x59, loop: true, blend: 0 } : kind === "hacking" ? { id: 0x5a, loop: true, blend: 0 }
+      : kind === "searching" ? { id: CABINET_CLIPS.open, loop: false, blend: 0 } : anim >= 0 ? { id: anim, loop: true, blend: 0 } : null;
+  }
+
+  /** The segment eye -> P against the world's ray triangles (FUN_004cc2a0, query type 1 [mask inferred]). */
+  function worldRay(from: V3, to: V3): { point: V3; normal: V3 } | null {
+    const world = ctx.world;
+    if (!world) return null;
+    const a = toEngine(from);
+    const b = toEngine(to);
+    const d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    const len = Math.hypot(d[0], d[1], d[2]);
+    if (!(len > 0)) return null;
+    const hit = world.raycast(a[0], a[1], a[2], d[0] / len, d[1] / len, d[2] / len, len, TRI_BULLET);
+    if (!hit) return null;
+    const lv = level();
+    // The normal faces the ray origin (RayHit.normal); IGI axes: (x, -z, y).
+    return { point: engineToIgi(lv, hit.point), normal: [hit.normal[0], -hit.normal[2], hit.normal[1]] };
+  }
+
+  /** State 36 entry (FUN_0040d180): the charge moves now, even if the use is then aborted. */
+  function placeExplosiveEntry(obj: TimedUseTarget): { position: V3; heading: number } {
+    const eye = view().eye;
+    const p = worldPoint(obj, 1);
+    const hit = (options.hooks?.ray ?? worldRay)(eye, p);
+    const at = placeExplosiveStance(eye, p, hit);
+    if (obj.placeTaskId >= 0) {
+      const rotation = eulerToMatrix(Math.fround(Math.PI / 2), 0, at.heading) as M3;
+      if (options.hooks?.placeTask) options.hooks.placeTask(obj.placeTaskId, at.charge, rotation);
+      else (ctx.systems.tasks as unknown as { objects?: { placeTask(id: number, p: V3, r: M3): void } } | null)?.objects?.placeTask(obj.placeTaskId, at.charge, rotation);
+    }
+    return { position: at.position, heading: at.heading };
   }
 
   function activate(input: { held: boolean; blocked: boolean; pelvis: V3 }): UseOutcome | null {
@@ -562,6 +710,15 @@ export function createInteractions(ctx: GameContext, options: InteractionOptions
       case "terminal":
         startTimed("hacking", obj.hackSeconds, "typecomp_loop", terminalStance(obj));
         break;
+      case "cabinet":
+        startTimed("searching", obj.seconds, "", timedUseStance(obj));
+        break;
+      case "tba":
+        startTimed("activating", obj.seconds, "", timedUseStance(obj));
+        break;
+      case "placeExplosive":
+        startTimed("activating", obj.seconds, "", placeExplosiveEntry(obj));
+        break;
       case "wire":
         busy = "attached";
         attach.attachWire(obj, input.pelvis);
@@ -574,14 +731,19 @@ export function createInteractions(ctx: GameContext, options: InteractionOptions
         busy = "attached";
         attach.attachFence(obj, input.pelvis);
         break;
+      case "stationaryGun":
+        // FUN_0040cd30 case 6: movement state 33 (the player controller places and attaches the body).
+        busy = "gun";
+        break;
     }
     target = null;
     return { kind, object: obj };
   }
 
-  function tickTimedUse(input: { held: boolean; dead: boolean; pelvis: V3 }): boolean {
-    if (busy !== "hacking" && busy !== "picking") return false;
+  function tickTimedUse(input: { held: boolean; dead: boolean; pelvis: V3; clipFinished?: boolean; play?: (clip: UseClip) => void }): boolean {
+    if (busy !== "hacking" && busy !== "picking" && busy !== "searching" && busy !== "activating") return false;
     const obj = active;
+    if (busy === "searching" || busy === "activating") return tickObjectUse(input);
     if (counter < limit) counter += 1;
     const going = !input.dead && input.held;
     if (counter === limit) {
@@ -605,6 +767,47 @@ export function createInteractions(ctx: GameContext, options: InteractionOptions
     return false;
   }
 
+  /**
+   * LAB_0040c510 (cabinet, state 31) / LAB_0040d580 (TBA 35, explosive 36) [recovered, full exe]:
+   * the cabinet's clip phases, counter = min(counter + 1, limit); at the limit with Activate held
+   * and alive the use finishes (searched / FUN_00443ea0); earlier, released or dead, it ends (a
+   * cabinet's drawer snaps shut, FUN_00444ba0, also at the limit when released).
+   */
+  function tickObjectUse(input: { held: boolean; dead: boolean; clipFinished?: boolean; play?: (clip: UseClip) => void }): boolean {
+    const obj = active as TimedUseTarget | null;
+    const rt = runtime() as unknown as MissionRuntime | null;
+    if (busy === "searching") {
+      if (phase === 0) {
+        if (input.clipFinished) {
+          input.play?.({ id: CABINET_CLIPS.search, loop: true, blend: 0 });
+          phase = 1;
+        }
+      } else if (phase === 1) {
+        const clip = host.clip(CABINET_CLIPS.close);
+        const lead = x87Fistp((clip?.duration ?? 0) * CLIP_SECONDS_PER_ANIM_TICK * 30);
+        if (limit - lead < counter) {
+          input.play?.({ id: CABINET_CLIPS.close, loop: false, blend: Math.fround(0.2) });
+          phase = 2;
+        }
+      }
+    }
+    const going = !input.dead && input.held;
+    if (counter < limit) counter += 1;
+    if (counter === limit) {
+      if (going && obj && rt) {
+        if (busy === "searching") cabinetSearched(rt, obj.nodeIndex);
+        else finishTba(rt, obj.nodeIndex);
+        release();
+        return false;
+      }
+    } else if (going) {
+      return true;
+    }
+    if (busy === "searching" && obj && rt) cabinetAbort(rt, obj.nodeIndex);
+    release();
+    return false;
+  }
+
   return {
     attach,
     get ready() {
@@ -617,7 +820,16 @@ export function createInteractions(ctx: GameContext, options: InteractionOptions
       return target ? useIconOf(target) : null;
     },
     get progress() {
-      return busy === "hacking" || busy === "picking" ? (limit > 0 ? counter / limit : 1) : null;
+      return busy === "hacking" || busy === "picking" || busy === "searching" || busy === "activating" ? (limit > 0 ? counter / limit : 1) : null;
+    },
+    get useState() {
+      return useState;
+    },
+    get useClip() {
+      return useClip;
+    },
+    setTrigger(t: number) {
+      trigger = t;
     },
     get busy() {
       return busy;
@@ -626,8 +838,9 @@ export function createInteractions(ctx: GameContext, options: InteractionOptions
       return busy !== null;
     },
     get weaponHolstered() {
-      // FUN_0040c600 (+0xd44 = 1) on every attach and on hacking; not on lock picking.
-      return busy === "attached" || busy === "hacking";
+      // FUN_0040c600 (+0xd44 = 1) on every attach and on hacking, searching and the TBAs; not on lock
+      // picking. State 33: FUN_0040c140.
+      return busy === "attached" || busy === "hacking" || busy === "searching" || busy === "activating" || busy === "gun";
     },
     get lockedYaw() {
       if (busy === "attached") return attach.heading;
@@ -648,6 +861,9 @@ export function createInteractions(ctx: GameContext, options: InteractionOptions
       latch = false;
       ladderSide = "bottom";
       stance = null;
+      useState = null;
+      useClip = null;
+      trigger = -1;
       loop?.stop();
       loop = null;
       if (models && loadedFor === level() && level()) build(level()!);

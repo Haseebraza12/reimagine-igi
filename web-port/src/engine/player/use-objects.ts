@@ -75,6 +75,22 @@ export const USE_ICON = {
   stationaryGun: "a_gun.spr",
 } as const;
 
+/**
+ * The GenericTBA "Click to select sprite" list (DAT_0057c1f0 = 10 entries, FUN_004871b0;
+ * the compile LAB_00448200 matches the name exactly) [recovered, full exe].
+ */
+export const TBA_SPRITES = [
+  "action_searchcab.spr", "action_comput.spr", "action_picklock.spr", "a_gun.spr", "action_pressbutton.spr",
+  "a_door.spr", "a_fence.spr", "a_ladder.spr", "a_wire.spr", "a_c4.spr",
+] as const;
+
+/** "STATUSSCREEN:a_c4.spr" -> "a_c4.spr" when it is one of the list's names (exact match), else null. */
+export function tbaSprite(value: string | null | undefined): string | null {
+  const v = value ?? "";
+  const name = v.startsWith("STATUSSCREEN:") ? v.slice("STATUSSCREEN:".length) : null;
+  return name && (TBA_SPRITES as readonly string[]).includes(name) ? name : null;
+}
+
 /** Search range: f64 8192 units (2 m) at context+0x78 (FUN_0045fb20) [recovered]. */
 export const USE_RANGE = 8192;
 /** Best-angle start values: pi/4 for the player (0x5317c0), pi for other humans (0x531400) [recovered]. */
@@ -165,6 +181,33 @@ export class UseSearch<T> {
   consider(point: readonly number[], obj: T): boolean {
     const d = sub(point, this.view.eye);
     if (!(Math.hypot(d[0], d[1], d[2]) < this.range)) return false;
+    const m = this.view.axes;
+    const fx = Math.fround(d[0]), fy = Math.fround(d[1]), fz = Math.fround(d[2]);
+    const local: V3 = [
+      Math.fround(m[0] * fx + m[3] * fy + m[6] * fz),
+      Math.fround(m[1] * fx + m[4] * fy + m[7] * fz),
+      Math.fround(m[2] * fx + m[5] * fy + m[8] * fz),
+    ];
+    if (!(local[1] > 0)) return false;
+    const v = Math.fround(Math.abs(verticalAngle(local)));
+    const h = Math.fround(Math.abs(horizontalAngle(local)));
+    if (v < this.bestVertical && h < this.bestHorizontal) {
+      this.bestHorizontal = h;
+      this.bestVertical = v;
+      this.winner = obj;
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * PlaceExplosiveTBA's test (LAB_004389e0, full exe) [recovered]: only while nothing earlier
+   * in the list won, within `range` units, in front of the view, better angles.
+   */
+  considerFirst(point: readonly number[], obj: T, range: number): boolean {
+    if (this.winner !== null) return false;
+    const d = sub(point, this.view.eye);
+    if (!(Math.hypot(d[0], d[1], d[2]) < range)) return false;
     const m = this.view.axes;
     const fx = Math.fround(d[0]), fy = Math.fround(d[1]), fz = Math.fround(d[2]);
     const local: V3 = [
@@ -471,6 +514,92 @@ export function terminalStance(panel: PanelTarget): { position: V3; heading: num
   };
 }
 
+// --- Cabinet / GenericTBA / PlaceExplosiveTBA (full exe; docs/objects.md) -----------
+
+/** A Cabinet (kind 4), GenericTBA (12) or PlaceExplosiveTBA (13) in the use list. */
+export interface TimedUseTarget extends PlacedModel {
+  kind: "cabinet" | "tba" | "placeExplosive";
+  taskId: number;
+  nodeIndex: number;
+  /** TBA: isOn (the cabinet has no gate). */
+  enabled: boolean;
+  /** "Search Time (s)" / "Activate Time (s)". */
+  seconds: number;
+  /** TBA "Activate Anim" clip (looped). */
+  anim: number;
+  /** HUD icon: action_searchcab.spr for a cabinet, the TBA's resolved sprite. */
+  icon: string | null;
+  /** PlaceExplosiveTBA "Activate radius (meters)" x 4096 (0x5333b8). */
+  range: number;
+  /** PlaceExplosiveTBA "Task ID to place" (-1 none). */
+  placeTaskId: number;
+}
+
+/**
+ * Cabinet LAB_00444860 (point 0) and GenericTBA LAB_00443c80 (point 1, only while isOn):
+ * the Switch / Terminal test, in front on R col 1 and |R col 0 . d| < 3072 [recovered, full exe].
+ * PlaceExplosiveTBA LAB_004389e0 (point 1, while isOn): no front test and no 2 m limit, its own
+ * radius, and only when no earlier object won [recovered, full exe].
+ */
+export function timedUseTest<T>(search: UseSearch<T>, obj: TimedUseTarget, self: T): boolean {
+  if (!obj.enabled) return false;
+  const p = worldPoint(obj, obj.kind === "cabinet" ? 0 : 1);
+  if (obj.kind === "placeExplosive") return search.considerFirst(p, self, obj.range);
+  const d = sub(search.view.eye, p).map(Math.fround);
+  const r = obj.rotation;
+  let x = Math.fround(r[0] * d[0] + r[3] * d[1] + r[6] * d[2]);
+  const y = Math.fround(r[1] * d[0] + r[4] * d[1] + r[7] * d[2]);
+  if (!(0 < y)) return false;
+  if (x < 0) x = -x;
+  if (!(x < PANEL_HALF_WIDTH)) return false;
+  return search.consider(p, self);
+}
+
+/** Cabinet stance offset R (778.24, 2457.6, 0) (f64 0x533428 / 0x533420 as floats; FUN_0040c2f0) [recovered]. */
+export const CABINET_STANCE: V3 = [Math.fround(778.24), Math.fround(2457.6), 0];
+/** GenericTBA stance offset R (0, 3481.6, 0) (0x533458; FUN_0040cf70) [recovered]. */
+export const TBA_STANCE: V3 = [0, Math.fround(3481.6), 0];
+
+/**
+ * States 31 / 35 entry stance (FUN_0040c2f0 / FUN_0040cf70): point (0 / 1) + R offset, x through
+ * a float store as the terminal's; heading = gamma(R) + pi [recovered, full exe].
+ */
+export function timedUseStance(obj: TimedUseTarget): { position: V3; heading: number } {
+  const p = worldPoint(obj, obj.kind === "cabinet" ? 0 : 1);
+  const o = obj.kind === "cabinet" ? CABINET_STANCE : TBA_STANCE;
+  const r = obj.rotation;
+  const off = [0, 1, 2].map((i) => Math.fround(r[i * 3] * o[0] + r[i * 3 + 1] * o[1])) as V3;
+  return {
+    position: [x87StoreF32(p[0] + off[0]), p[1] + off[1], p[2] + off[2]],
+    heading: Math.fround(headingOf(r) + Math.fround(Math.PI)),
+  };
+}
+
+/** State 36: the player stands this far back from the hit along the eye ray (0x533460) [recovered]. */
+export const PLACE_EXPLOSIVE_BACK_OFF = 2048;
+
+/**
+ * State 36 entry (FUN_0040d180) [recovered, full exe]: from the eye toward P = pos + point 1;
+ * X = the ray's hit (else the eye) and n = its +0x38 vector (else P - eye) [n = the hit normal:
+ * inferred]; gamma = atan2(n.y, n.x) (0 when n.x == 0, FUN_004b2d00) + pi/2. The charge goes to
+ * X with Euler(pi/2, 0, gamma); the player to X - unit(P - eye) x 2048, heading gamma.
+ */
+export function placeExplosiveStance(eye: readonly number[], p: readonly number[], hit: { point: readonly number[]; normal: readonly number[] } | null): {
+  position: V3; heading: number; charge: V3;
+} {
+  const ray: V3 = [p[0] - eye[0], p[1] - eye[1], p[2] - eye[2]];
+  let n = (hit ? [...hit.normal] : ray).map(Math.fround);
+  const x: V3 = hit ? [hit.point[0], hit.point[1], hit.point[2]] : [eye[0], eye[1], eye[2]];
+  if (n[0] !== 0 || n[1] !== 0 || n[2] !== 0) {
+    const k = Math.fround(1 / Math.fround(Math.sqrt(n[2] * n[2] + n[1] * n[1] + n[0] * n[0])));
+    n = n.map((v) => Math.fround(v * k));
+  }
+  const gamma = Math.fround((n[0] === 0 ? 0 : Math.fround(Math.atan2(n[1], n[0]))) + Math.fround(Math.PI / 2));
+  const len = Math.hypot(ray[0], ray[1], ray[2]) || 1;
+  const back = ray.map((v) => (v / len) * PLACE_EXPLOSIVE_BACK_OFF);
+  return { position: [x[0] - back[0], x[1] - back[1], x[2] - back[2]], heading: gamma, charge: x };
+}
+
 // --- Fence (FUN_0043f280; attach FUN_00411710) ---------------------------------------
 
 /** Fence approach angle limit pi/3 (f32 0x531858) [recovered]. */
@@ -519,9 +648,31 @@ export function fenceMount(fence: FenceTarget, pelvis: readonly number[]): { pos
   };
 }
 
+// --- StationaryGun (FUN_00473ed0 type; test FUN_00474e30, full exe) ----------------------
+
+/**
+ * A StationaryGun as a use target: the use point P = origin + object matrix x
+ * magic vertex 0 (FUN_00414e20(self, 0)) and the object matrix (+0x70 = base x
+ * Rz(total yaw)); only free guns are listed (+0x21c clear).
+ */
+export interface StationaryGunTarget {
+  kind: "stationaryGun";
+  taskId: number;
+  nodeIndex: number;
+  point: V3;
+  rotation: M3;
+}
+
+/** FUN_00474e30 [recovered]: from behind ((eye - P) . col1 >= 0), then the common point test on P. */
+export function stationaryGunUseTest<T>(search: UseSearch<T>, gun: StationaryGunTarget, self: T): boolean {
+  const c1 = col(gun.rotation, 1);
+  if (!(dot(sub(search.view.eye, gun.point), c1) >= 0)) return false;
+  return search.consider(gun.point, self);
+}
+
 // --- the use list ---------------------------------------------------------------------
 
-export type UseObject = Ladder | Wire | DoorTarget | PanelTarget | FenceTarget;
+export type UseObject = Ladder | Wire | DoorTarget | PanelTarget | FenceTarget | TimedUseTarget | StationaryGunTarget;
 
 export interface UseResult {
   target: UseObject | null;
@@ -556,6 +707,14 @@ export function searchUseTarget(view: UseView, objects: readonly UseObject[], pr
       case "fence":
         fenceUseTest(search, obj, obj);
         break;
+      case "cabinet":
+      case "tba":
+      case "placeExplosive":
+        timedUseTest(search, obj, obj);
+        break;
+      case "stationaryGun":
+        stationaryGunUseTest(search, obj, obj);
+        break;
     }
   }
   return { target: search.winner, ladderSide };
@@ -576,11 +735,19 @@ export function useKindOf(obj: UseObject): UseKind {
       return USE_KIND.TERMINAL;
     case "fence":
       return USE_KIND.FENCE;
+    case "cabinet":
+      return USE_KIND.CABINET;
+    case "tba":
+      return USE_KIND.GENERIC_TBA;
+    case "placeExplosive":
+      return USE_KIND.PLACE_EXPLOSIVE_TBA;
+    case "stationaryGun":
+      return USE_KIND.STATIONARY_GUN;
   }
 }
 
 /** HUD action icon of a target (method 0x42e; docs/hud.md) [recovered]. */
-export function useIconOf(obj: UseObject): string {
+export function useIconOf(obj: UseObject): string | null {
   switch (obj.kind) {
     case "ladder":
       return USE_ICON.ladder;
@@ -594,5 +761,11 @@ export function useIconOf(obj: UseObject): string {
       return USE_ICON.terminal;
     case "fence":
       return USE_ICON.fence;
+    case "cabinet":
+    case "tba":
+    case "placeExplosive":
+      return obj.icon;
+    case "stationaryGun":
+      return USE_ICON.stationaryGun;
   }
 }

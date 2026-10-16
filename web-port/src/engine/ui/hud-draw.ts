@@ -86,6 +86,8 @@ export interface HudView {
   timerTicks: number | null;
   /** Zoomed binoculars / sniper scope: drawn instead of the weapon panel. */
   scope?: ScopeView | null;
+  /** The binocular overlay of a visible BinocularOverlayHolder (the L5 intro), from the view camera. */
+  holderScope?: ScopeView | null;
   binocularBars?: BinocularBars;
   /** Binocular target squares (FUN_00470510) and the wall-clock time they animate with. */
   binocularTargets?: BinocularTargets;
@@ -280,6 +282,12 @@ export function submitPlayerHud(view: HudView, res: HudResources, p: Painter): v
 /** The whole StatusScreen frame. */
 export function submitHud(view: HudView, radio: StatusMessageScreen, res: HudResources, p: Painter): void {
   submitStatusMessages(radio, res, view.W, view.H, p);
+  // A BinocularOverlayHolder's overlay (LAB_00471330: a BinocularOverlay child of the StatusScreen
+  // container, drawn on its draw message 0x540b5c; full exe) also shows in cut-scenes; its target
+  // squares are unknown in that path. After the messages, as the zoomed binoculars [order inferred].
+  if (view.holderScope?.kind === "binoculars" && view.binocularBars) {
+    submitBinoculars(view.holderScope, view.binocularBars, { sprites: res.commonSprites?.sprites ?? new Map(), hudFont: res.hudFont }, view.W, view.H, p);
+  }
   if (!view.playerHud) return;
   submitPlayerHud(view, res, p);
   if (view.timerTicks !== null) {

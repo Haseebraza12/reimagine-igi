@@ -78,6 +78,11 @@ export interface Enemy {
   aiType: string;
   weapon: LevelWeapon | null;
   object: THREE.Object3D | null;
+  /**
+   * Human +0xcf6 cleared: the body was removed from the world (300 ticks after its death clip,
+   * HumanAI update 0x44fa8f, full exe): no longer drawn, perceived, hit or counted by areas.
+   */
+  outOfWorld?: boolean;
 }
 
 export interface ObjectiveState {
@@ -115,6 +120,8 @@ export interface TaskRuntimeApi {
    * perceptionPhases); undefined when unknown.
    */
   perceptionPhase?(taskId: number): number | undefined;
+  /** A HumanAI node compiled at run time (GuardGenerator spawn) takes the counter's next phase. */
+  takePerceptionPhase?(node: number): number;
 }
 
 export interface GameSubsystems {

@@ -76,6 +76,23 @@ import {
   soldierTick,
   type SoldierActionEntry,
 } from "./soldier-graph";
+import {
+  FEMALE_ACTIONS,
+  FEMALE_CROUCH,
+  FEMALE_KEEP,
+  FEMALE_STATE,
+  FEMALE_ZONES,
+  RPG_ACTIONS,
+  RPG_CROUCH,
+  RPG_KEEP,
+  RPG_STATE,
+  RPG_ZONES,
+  VBIT,
+  aiBodyState,
+  femaleTick,
+  rpgTick,
+  type SoldierClass,
+} from "./soldier-variants";
 
 export type { BodyAnimator } from "./clip-player";
 
@@ -159,6 +176,14 @@ export interface MotorEvents {
   died?(info: { state: number; clip: number; matrixYaw: number }): void;
   /** State 29 started (FUN_0045ac20: the air velocity takes the last movement). */
   fell?(): void;
+  /**
+   * combat: channel 24 pressed outside state 36 (the pre-update, 0x459c2b full exe): +0xd10 =
+   * fistp(channel 24) and FUN_00459d50 uses that task; returns its use kind (6 = a StationaryGun:
+   * the engine placed and attached the body, FUN_0045c8b0) or 0 when nothing was used.
+   */
+  use?(taskId: number): number;
+  /** combat: state 36 left (0x45c9b0: a fresh channel-24 press or death): release the gun, detach. */
+  gunReleased?(): void;
 }
 
 export interface MotorOptions {
@@ -166,6 +191,10 @@ export interface MotorOptions {
   aiType?: string | null;
   /** Level RNG float for the gun's view kick (FUN_00477ea0); default: no random part. */
   randFloat?: () => number;
+  /** combat: the task's class (HumanSoldier / HumanSoldierFemale / HumanSoldierRPG: soldier-variants.ts). */
+  cls?: SoldierClass;
+  /** Root-motion scale (FUN_004550b0: DefineHumanPlayerGeneral arg 0 for an AITYPE_EKK female; default 1). */
+  rootScale?: number;
 }
 
 export interface MotorEnv {
@@ -191,6 +220,11 @@ export class SoldierMotor {
   bodyYaw: number;
   /** Walking flag (soldier +0xd00, constructor 1); 0 = run. */
   walking = true;
+  /**
+   * combat: attached to a StationaryGun (FUN_00463310): FUN_0045fd00 takes the heading from the
+   * object's matrix and the relative orientation (E100), so the turn channel does not turn the body.
+   */
+  attachedToGun = false;
   /** Graph condition bits (+0x2f4). */
   bits = 0;
   /** Graph state (+0x2fc) and previous state (+0xc). */
@@ -227,6 +261,9 @@ export class SoldierMotor {
   rootZ = 0.97 * 4096;
   readonly previous = new Float32Array(40);
   readonly actions: readonly SoldierActionEntry[];
+  /** combat: the body graph class and its root-motion scale. */
+  readonly cls: SoldierClass;
+  private readonly rootScale: number;
 
   // Gun
   gun: GunSpec | null;
@@ -254,17 +291,29 @@ export class SoldierMotor {
     this.gun = gun;
     this.ammo = gun ? gun.roundsPerClip : 0;
     this.grenades = grenade ? 1 : 0;
-    this.actions = soldierActionTable(options.aiType);
+    this.cls = options.cls ?? "soldier";
+    this.rootScale = options.rootScale ?? 1;
+    this.actions = this.cls === "female" ? FEMALE_ACTIONS : this.cls === "rpg" ? RPG_ACTIONS : soldierActionTable(options.aiType);
     this.randFloat = options.randFloat ?? null;
     // Activation (FUN_0045bb60): the Stand Animation (or clip 2) one-shot; the
-    // first graph run then runs state 0's entry.
-    const first = this.standAnimation >= 0 && this.body.hasClip(this.standAnimation) ? this.standAnimation : 2;
+    // first graph run then runs state 0's entry. The female's compile (0x454f10) plays clip 6.
+    const fallback = this.cls === "female" ? 6 : 2;
+    const first = this.standAnimation >= 0 && this.body.hasClip(this.standAnimation) ? this.standAnimation : fallback;
     this.body.playClip(first, false);
     this.rootZ = this.body.rootZ;
   }
 
-  /** Body state as read by the AI (soldier +0x2fc through table 0x53f4fc). */
+  /**
+   * Body state as read by the AI (soldier +0x2fc through table 0x53f4fc); the variants' states are
+   * reported in the soldier numbering through their tables (FUN_0048efe0, soldier-variants.ts).
+   */
   get state(): number {
+    if (this.cls === "soldier") return this.stateIndex;
+    return aiBodyState(this.cls, this.stateIndex, [BODY.STAND, BODY.KNEEL, BODY.LIEDOWN, BODY.ANIMATION, BODY.STATIONARY_GUN]);
+  }
+
+  /** The class's own graph state (+0x2fc). */
+  get graphState(): number {
     return this.stateIndex;
   }
 
@@ -277,8 +326,15 @@ export class SoldierMotor {
     return (this.bits & COND.DEAD) !== 0;
   }
 
+  /** +0x33c: the death clip has finished (the death state's end tick 0x45c740 / the dead hold). */
+  get deathFinished(): boolean {
+    return this.deathHold;
+  }
+
   /** Pose class of the state (stand / kneel / prone). */
   get stance(): Stance {
+    if (this.cls === "rpg") return this.stateIndex >= RPG_STATE.TO_KNEEL && this.stateIndex <= RPG_STATE.KNEEL_SHOULDER && this.stateIndex !== RPG_STATE.KNEEL_TO_STAND ? "kneel" : "stand";
+    if (this.cls === "female") return "stand";
     if (STANCE_PRONE.has(this.stateIndex)) return "prone";
     if (STANCE_KNEEL.has(this.stateIndex)) return "kneel";
     return "stand";
@@ -309,7 +365,8 @@ export class SoldierMotor {
       this.bits |= COND.DEAD;
     } else if (this.recoilThreshold < this.recoilAccum) {
       this.recoilAccum = 0;
-      this.bits |= COND.FLINCH;
+      // HumanSoldierFemale (0x4553e0 / 0x455570 / 0x455780): the sum restarts but no flinch bit is set.
+      if (this.cls !== "female") this.bits |= COND.FLINCH;
     }
   }
 
@@ -486,13 +543,204 @@ export class SoldierMotor {
     this.bits = b;
   }
 
+  // --- HumanSoldierFemale / HumanSoldierRPG (soldier-variants.ts) ----------------------------
+
+  /**
+   * The variant pre-update (0x454ba0 / FUN_00456cf0) and state tick. The AI's soldier-layout request
+   * channels are read as the class's own (female: 23 animation, 24 use, 27 aim; RPG: 21 kneel, 23
+   * animation); the female's use (switches, doors) and weapon change are not modelled.
+   */
+  private variantGraph(ch: Float32Array, env: MotorEnv): { refill: boolean; deathSlide: boolean } {
+    const female = this.cls === "female";
+    let b = this.bits & (female ? FEMALE_KEEP : RPG_KEEP);
+    if (env.grounded ?? true) b |= VBIT.GROUNDED;
+    else b &= ~VBIT.GROUNDED;
+    if (env.roof) b |= VBIT.ROOF;
+    else b &= ~VBIT.ROOF;
+    if (this.body.finished) b |= VBIT.FINISHED;
+    if (this.walking) b |= VBIT.WALKING;
+    const bitsOf: Array<[number, number]> = [[CH.LEFT, VBIT.LEFT], [CH.RIGHT, VBIT.RIGHT], [CH.FORWARD, VBIT.FORWARD], [CH.BACK, VBIT.BACK], [CH.FIRE, VBIT.FIRE], [CH.CH7, VBIT.CH7], [CH.RELOAD, VBIT.RELOAD], [CH.CH9, VBIT.CH9]];
+    for (const [k, m] of bitsOf) if (ch[k] !== 0) b |= m;
+    if (female) {
+      if (ch[CH.ANIMATION] !== 0) {
+        b |= VBIT.CH21;
+        this.scripted = x87Fistp(ch[CH.ANIMATION]);
+      }
+      if (ch[CH.USE] !== 0) b |= VBIT.CH22;
+      if (ch[CH.AIM] !== 0) b |= VBIT.CH23;
+    } else {
+      if (ch[CH.KNEEL] !== 0) b |= VBIT.CH21;
+      if (ch[CH.ANIMATION] !== 0) {
+        b |= VBIT.CH22;
+        this.scripted = x87Fistp(ch[CH.ANIMATION]);
+      }
+    }
+    this.bits = b;
+    let refill = false;
+    let deathSlide = false;
+    const deathState = female ? FEMALE_STATE.DEATH : RPG_STATE.DEATH;
+    if (!this.entered) {
+      this.entered = true;
+      this.enterVariant(0);
+    } else if (this.stateIndex === deathState) {
+      // 0x4547b0 / 0x456920: the slide, then the dead hold (0x45c740) once the clip finished.
+      if (!this.deathHold) {
+        deathSlide = true;
+        if (b & VBIT.FINISHED) this.deathHold = true;
+      }
+    } else {
+      const input = { bits: b, scripted: this.scripted, fireChannel: ch[CH.FIRE] !== 0 };
+      const r = female ? femaleTick(this.stateIndex, input) : rpgTick(this.stateIndex, input);
+      this.triggerThisTick = r.trigger;
+      refill = r.refill;
+      if (r.aimOn) this.aimEnabled = true;
+      if (r.next >= 0) this.enterVariant(r.next);
+    }
+    return { refill, deathSlide };
+  }
+
+  /** The variant entries (0x453a30 ... 0x454940, 0x455990 ... 0x456960) [recovered]. */
+  private enterVariant(state: number): void {
+    const female = this.cls === "female";
+    this.previousState = this.stateIndex;
+    this.stateIndex = state;
+    const crouch = (female ? FEMALE_CROUCH : RPG_CROUCH)[state];
+    if (crouch !== null && crouch !== undefined) this.crouched = crouch === 1;
+    const zones = female ? FEMALE_ZONES : RPG_ZONES;
+    const F = FEMALE_STATE;
+    const R = RPG_STATE;
+    if (state === 0) {
+      if (this.standAnimation !== -1 && this.body.hasClip(this.standAnimation)) this.body.playClip(this.standAnimation, false);
+      else this.playSlot(0);
+      return;
+    }
+    if (female) {
+      switch (state) {
+        case F.RUN:
+        case F.WALK: {
+          const phase = this.body.phase();
+          this.playSlot(state);
+          if (this.previousState === (state === F.RUN ? F.WALK : F.RUN)) this.body.setTime(phaseTime(phase, this.body.clipDuration(this.body.currentClip)));
+          return;
+        }
+        case F.FALL:
+          this.playSlot(state);
+          this.events.fell?.();
+          return;
+        case F.FLINCH: {
+          const zone = zones[this.hitZone];
+          if (zone) this.body.playClip(zone.flinchClip, false);
+          this.aimEnabled = false;
+          return;
+        }
+        case F.DEATH:
+          this.enterVariantDeath(state, zones);
+          return;
+        case F.ANIMATION: {
+          const id = this.scripted;
+          // 0x4547f0: -1 -> slot 6; else the clip LOOPED (FUN_00489ea0(h, id, 1, 0)); missing -> slot 6.
+          if (id !== -1 && this.body.hasClip(id)) {
+            this.body.playClip(id, true);
+            this.scriptedClip = id;
+          } else {
+            this.playSlot(F.RAISE);
+            this.scriptedClip = -1;
+          }
+          this.scripted = 0;
+          this.aimEnabled = false;
+          return;
+        }
+        default:
+          this.playSlot(state);
+          return;
+      }
+    }
+    switch (state) {
+      case R.WALK: {
+        const phase = this.body.phase();
+        this.playSlot(state);
+        if (this.previousState === R.RUN) this.body.setTime(phaseTime(phase, this.body.clipDuration(this.body.currentClip)));
+        return;
+      }
+      case R.FALL:
+        this.playSlot(state);
+        this.events.fell?.();
+        return;
+      case R.FLINCH: {
+        const zone = zones[this.hitZone];
+        if (zone) this.body.playClip(zone.flinchClip, false);
+        return;
+      }
+      case R.DEATH:
+        this.enterVariantDeath(state, zones);
+        return;
+      case R.ANIMATION: {
+        // 0x456960: +0xd04 == -1 -> slot 2; else the clip one-shot; missing -> slot 2.
+        const id = this.scripted;
+        if (id !== -1 && this.body.hasClip(id)) {
+          this.body.playClip(id, false);
+          this.scriptedClip = id;
+        } else {
+          this.playSlot(R.WALK);
+          this.scriptedClip = -1;
+        }
+        this.scripted = 0;
+        return;
+      }
+      default:
+        this.playSlot(state);
+        return;
+    }
+  }
+
+  /**
+   * Female 0x4546c0: the AI's death animation, else the zone record's death clip (13 for every zone).
+   * RPG 0x4567c0: the AI's, else r = rand(2); death type 0 / 1 (explosion, shotgun): FUN_0045daa0 -> 16
+   * with the blast in front (heading = its direction), else 15 (heading + pi); type 2: head zones 15 /
+   * 16 their record's clips[r], else {14, 12}[r]. The gun drops, the aim goes off.
+   */
+  private enterVariantDeath(state: number, zones: readonly { deathClips: readonly [number, number] }[]): void {
+    this.stopFiring();
+    this.weaponDropped = true;
+    this.aimEnabled = false;
+    this.deathHold = false;
+    const matrixYaw = this.bodyYaw;
+    const override = this.events.deathAnimation ? this.events.deathAnimation() : this.deathOverride;
+    let clip = -1;
+    if (override !== -1 && override !== undefined) clip = override;
+    else if (this.cls === "female") clip = zones[this.hitZone]?.deathClips[0] ?? zones[13].deathClips[0];
+    else {
+      const r = this.randInt(2);
+      if (this.deathType === DEATH_TYPE.EXPLOSION || this.deathType === DEATH_TYPE.SHOTGUN) {
+        clip = this.blownDeath() === BLOWN_DEATH_CLIP.FORWARD ? 16 : 15;
+      } else if (this.deathType === DEATH_TYPE.OTHER) {
+        clip = this.hitZone === 15 || this.hitZone === 16 ? zones[this.hitZone].deathClips[r] : [14, 12][r];
+      }
+    }
+    this.body.playClip(clip, false);
+    this.events.died?.({ state, clip, matrixYaw });
+  }
+
   /** One 30 Hz tick with the channels the AI wrote on its previous frame. Returns the root step. */
   step(ch: Float32Array, env: MotorEnv = {}): BodyStep {
     this.triggerThisTick = false;
     let refill = false;
     let deathSlide = false;
     // 1. Graph (FUN_004e2d60).
+    if (this.cls !== "soldier") {
+      ({ refill, deathSlide } = this.variantGraph(ch, env));
+    } else {
     this.preUpdate(ch, env);
+    // combat: the pre-update's use (0x459c2b): channel 24 outside state 36 uses task fistp(ch 24) (FUN_00459d50);
+    // a StationaryGun switches to state 36 at once and the record's channel 24 is cleared (0x459c5c).
+    if (ch[CH.USE] !== 0 && this.stateIndex !== ST.STATIONARY_GUN && this.entered) {
+      const kind = this.events.use?.(x87Fistp(ch[CH.USE])) ?? 0;
+      if (kind === 6) {
+        this.enter(ST.STATIONARY_GUN);
+        ch = Float32Array.from(ch);
+        ch[CH.USE] = 0;
+      }
+    }
     if (!this.entered) {
       this.entered = true;
       this.enter(ST.STAND);
@@ -531,18 +779,21 @@ export class SoldierMotor {
         this.events.closeCombatStrike?.();
       }
       if (r.aimOn) this.aimEnabled = true;
+      if (r.next >= 0 && this.stateIndex === ST.STATIONARY_GUN && r.next !== ST.STATIONARY_GUN) this.events.gunReleased?.();
       if (r.next >= 0) this.enter(r.next);
+    }
     }
     // 2. Walking toggle, flinch bit cleared.
     if (ch[CH.WALK_TOGGLE] !== 0) this.walking = !this.walking;
     this.bits &= ~COND.FLINCH;
     // 3. Turn (FUN_0045fd00) and view pitch (FUN_00463470).
-    this.yaw -= turnFromChannel(ch[CH.TURN], this.previous[CH.TURN]);
+    if (!this.attachedToGun) this.yaw -= turnFromChannel(ch[CH.TURN], this.previous[CH.TURN]);
     this.bodyYaw = this.yaw + this.kickYaw;
     this.pitch = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, this.pitch + turnFromChannel(ch[CH.PITCH], this.previous[CH.PITCH])));
     this.aimPitch = Math.fround(this.kickPitch + this.pitch);
     // 4. Root delta, then the advance.
     const delta = this.body.rootDelta();
+    if (this.rootScale !== 1) for (let k = 0; k < 3; k++) delta[k] = Math.fround(delta[k] * this.rootScale);
     this.rootZ = this.body.rootZ;
     const adv = this.body.advance();
     const first: AnimTrigger | undefined = adv.triggers[0];

@@ -21,6 +21,11 @@
  *     alpha test > 10; FOGENABLE 0; texture x diffuse, alpha = texture alpha.
  *
  * Positions arrive in engine metres (mission-system securityCameraLights()).
+ *
+ * The AlarmLight reflector's glow (full exe FUN_00439f10, world/world-tasks.ts
+ * alarmLightGlows) uses the same sprite, flags 0x1040008 and depth test; it is
+ * drawn only while the camera is on the lamp's local +y side:
+ * (camera - lamp origin) . (lamp +0x108 column 1) > 0 (`facing`).
  */
 import * as THREE from "three";
 import type { Vec3 } from "../../contracts";
@@ -35,6 +40,8 @@ export interface AlarmLightQuad {
   position: Vec3;
   rgb: Vec3;
   halfSize: number;
+  /** Drawn only when (camera - origin) . axis > 0 (engine space; the AlarmLight glow). */
+  facing?: { origin: Vec3; axis: Vec3 };
 }
 
 export interface AlarmLightRenderer {
@@ -134,7 +141,10 @@ export function createAlarmLightRenderer(sprite: UiSprite): AlarmLightRenderer |
       for (const l of lights) {
         // FUN_00496190: drawn only when the view depth is > 0.
         const depth = (l.position[0] - camPos.x) * forward.x + (l.position[1] - camPos.y) * forward.y + (l.position[2] - camPos.z) * forward.z;
-        if (depth > 0) quads.push(l);
+        if (!(depth > 0)) continue;
+        const f = l.facing;
+        if (f && !((camPos.x - f.origin[0]) * f.axis[0] + (camPos.y - f.origin[1]) * f.axis[1] + (camPos.z - f.origin[2]) * f.axis[2] > 0)) continue;
+        quads.push(l);
       }
       count = quads.length;
       if (count > capacity) {

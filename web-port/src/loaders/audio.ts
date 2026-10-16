@@ -315,9 +315,12 @@ export function readSoundDefinitions(qvmBuffer: ArrayBuffer, origin = "common"):
       for (const child of a.slice(1)) walk(child as QvmCall, [...path, name]);
       return;
     }
-    const want = call.fn === "DefineSound" ? 13 : call.fn === "DefineGraph" ? 33 : call.fn === "DefineTriggerOnce" ? 15 : -1;
-    if (want < 0) throw new Error(`sounds.qvm: unknown call ${call.fn} at code 0x${call.codeOffset.toString(16)}`);
-    if (a.length !== want) throw new Error(`sounds.qvm: ${at} has ${a.length} arguments (${want} expected)`);
+    // DefineGraph: 33 arguments in the one-mission build (LAB_004e18c0), 34 in the full game
+    // (FUN_004ead20 of its exe: argument 11 fills the field DefineSound's argument 11 fills, which
+    // the runtime never reads; the curves follow it).
+    const want = call.fn === "DefineSound" ? [13] : call.fn === "DefineGraph" ? [33, 34] : call.fn === "DefineTriggerOnce" ? [15] : [];
+    if (!want.length) throw new Error(`sounds.qvm: unknown call ${call.fn} at code 0x${call.codeOffset.toString(16)}`);
+    if (!want.includes(a.length)) throw new Error(`sounds.qvm: ${at} has ${a.length} arguments (${want.join(" or ")} expected)`);
     const base = {
       origin,
       group: path.join("/"),
@@ -346,8 +349,8 @@ export function readSoundDefinitions(qvmBuffer: ArrayBuffer, origin = "common"):
         pitchVar: num(a[9], `${at} pitch var`),
         sampleVar: num(a[10], `${at} sample var`),
         loop: true,
-        volumeCurve: a.slice(11, 22).map((v, i) => num(v, `${at} volume curve ${i}`)),
-        pitchCurve: a.slice(22, 33).map((v, i) => num(v, `${at} pitch curve ${i}`)),
+        volumeCurve: a.slice(a.length - 22, a.length - 11).map((v, i) => num(v, `${at} volume curve ${i}`)),
+        pitchCurve: a.slice(a.length - 11).map((v, i) => num(v, `${at} pitch curve ${i}`)),
       });
     } else {
       out.push({

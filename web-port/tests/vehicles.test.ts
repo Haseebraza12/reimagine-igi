@@ -235,10 +235,14 @@ describe.skipIf(!hasData)("level 1 vehicles", () => {
     });
   };
 
-  it("physicsobj: 34 types from 14 scripts (the 3 plane scripts use unsupported expressions)", async () => {
+  it("physicsobj: 37 types from 17 scripts (the plane scripts' constant expressions fold, qvm.ts)", async () => {
     const c = await load();
-    expect(c.types.length).toBe(34);
-    expect(c.skipped.map((s) => s.split("/").slice(-2).join("/"))).toEqual(["CutSceneMissile/plane.qvm", "JSF/plane.qvm", "SU27/plane.qvm"]);
+    expect(c.types.length).toBe(37);
+    expect(c.skipped).toEqual([]);
+    const su27 = c.types.find((t) => t.model === "702_02_1")!;
+    expect(su27.taskType).toBe("TASKTYPE_PLANE");
+    // 15000 * 1.5 and 0.027 * 2 / 0.003 * 2 (float32 products, spec vehicles §1.4)
+    expect((su27.config as VehicleBaseConfig).c).toEqual([700, 1.7, 0.9, 0.9, 0.9, 40, 0.9, 22500, 0.054, 0.006].map(Math.fround));
     const truck = c.types.find((t) => t.model === "622_01_1")!;
     expect(truck.source).toContain("cutscene_truck");
     expect((truck.config as CarConfig).wheels.length).toBe(6);

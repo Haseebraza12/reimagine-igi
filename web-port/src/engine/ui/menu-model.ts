@@ -212,6 +212,8 @@ export interface MenuEnvironment {
   attract?(): void;
   /** Port: Game_SetPlayMode(0 story / 1 free) from the mode dialog (ui/mode-menu.ts). */
   setPlayMode?(mode: number): void;
+  /** Port: Game_IsMissionInstalled(id): the mission's files are staged (true without this hook). */
+  missionInstalled?(id: number): boolean;
 }
 
 export interface MenuInputState {
@@ -758,8 +760,8 @@ export class MenuManager {
       const p = this.pressAt;
       const pressedInside = !!p && i.x < p.x && i.y < p.y && p.x < i.x + i.w && p.y < i.y + i.h;
       const armed = i.armed || pressedInside;
-      if (i.kind === "text" && i.selectable && i.enabled && armed && inside && scriptStartsPlay(i.clickScript)) hit = true;
-      if (i.kind === "scrolllist" && inside && scriptStartsPlay(i.selectScript)) {
+      if (i.kind === "text" && i.selectable && i.enabled && armed && inside && this.startsPlay(i.clickScript, i)) hit = true;
+      if (i.kind === "scrolllist" && inside && this.startsPlay(i.selectScript, i)) {
         const row = Math.trunc((this.pointer.y - i.y) / i.rowHeight) + i.scroll;
         if ((row === i.activeIndex || row >= i.entries.length) && i.lastClickTick !== -1 &&
           this.ticks - i.lastClickTick < Math.round(this.options.ticksPerSecond * 0.5)) hit = true;
@@ -768,10 +770,20 @@ export class MenuManager {
     return hit;
   }
 
+  /**
+   * scriptStartsPlay, and for a Select Mission start guarded by the port (Game_IsMissionInstalled,
+   * ui/mode-menu.ts) only when that mission is installed (else the script opens a dialog instead).
+   */
+  private startsPlay(script: string, self: MenuItem): boolean {
+    if (!scriptStartsPlay(script)) return false;
+    const guard = /Game_IsMissionInstalled\(([^()]*)\)/.exec(script);
+    return guard ? this.evaluate(guard[0], self) !== 0 : true;
+  }
+
   /** Would this key (pressed now) leave into play? */
   keyStartsPlay(code: number): boolean {
     if (this.state !== 2) return false;
-    if (code === MENU_KEY.RETURN && this.selected?.kind === "text") return scriptStartsPlay(this.selected.clickScript);
+    if (code === MENU_KEY.RETURN && this.selected?.kind === "text") return this.startsPlay(this.selected.clickScript, this.selected);
     if (code === MENU_KEY.ESCAPE && !this.popup && this.screen) return scriptStartsPlay(this.screen.escapeScript);
     return false;
   }
@@ -978,6 +990,8 @@ export class MenuManager {
       case "Game_SetPlayMode":
         this.env.setPlayMode?.(a(0));
         return 1;
+      case "Game_IsMissionInstalled":
+        return this.env.missionInstalled ? (this.env.missionInstalled(a(0)) ? 1 : 0) : 1;
       case "LevelFlow_LevelFailed":
         return this.env.levelFailed() ? 1 : 0;
       case "LevelFlow_IsCountryUSA":

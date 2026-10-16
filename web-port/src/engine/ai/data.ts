@@ -15,6 +15,8 @@ import {
   LEVEL1_PATHS,
   QVM_AI_TYPE_SCRIPT,
   aiCombatConfig,
+  aiGraphPosition,
+  eulerToMatrix,
   flattenTasks,
   loadQvmProgram,
   readAiGraph,
@@ -22,6 +24,8 @@ import {
   readQvmCallTree,
   readTaskTree,
   type AiGraph,
+  type AiGraphParent,
+  type AiGraphPosition,
   type AiRulesCombatConfig,
   type IgiLevel,
   type IgiLevelPaths,
@@ -33,8 +37,11 @@ import type { V3 } from "./types";
 export interface AiGraphInfo {
   id: number;
   graph: AiGraph;
-  /** AIGraph "Graph position" (IGI world units). */
-  position: V3;
+  /**
+   * AIGraph "Graph position" (IGI units), with the parent object when the graph is attached
+   * (loaders/ai-graph.ts aiGraphNodeWorld): world = P (graph position + node) + parent position.
+   */
+  position: AiGraphPosition;
   /** "Node cover midoffset" (metres) [recovered schema FUN_004ffe00]. */
   midOffset: number;
 }
@@ -74,6 +81,28 @@ async function tryRead(source: IAssetSource, path: string): Promise<ArrayBuffer 
   }
 }
 
+/**
+ * Task types whose class derives from RigidDynCubeObj, so an AIGraph under them is attached
+ * (FUN_004efc80) [recovered class chains: Building > SectorObject, EditRigidObj >
+ * SectorInteriorObject, Elevator, Heli / Train / Plane > Vehicle > PhysicsObject, StationaryGun;
+ * Car inferred as a Vehicle].
+ */
+export const GRAPH_ATTACHING_TYPES: ReadonlySet<string> = new Set([
+  "Building", "EditRigidObj", "Elevator", "Heli", "Train", "Plane", "Car", "StationaryGun",
+]);
+
+/** The parent's pose at load from its placement parameters (Position, Orientation / Gamma). */
+function parentPoseFromTask(task: IgiTask): { position: [number, number, number]; matrix: number[] } | null {
+  const pos = task.params.Position;
+  if (!Array.isArray(pos) || pos.length !== 3) return null;
+  const o = task.params.Orientation;
+  const g = task.params.Gamma;
+  const matrix = Array.isArray(o) && o.length === 3
+    ? eulerToMatrix(Number(o[0]), Number(o[1]), Number(o[2]))
+    : eulerToMatrix(0, 0, typeof g === "number" ? g : 0);
+  return { position: [Number(pos[0]), Number(pos[1]), Number(pos[2])], matrix: [...matrix] };
+}
+
 export async function loadAiLevelData(source: IAssetSource, level: IgiLevel, paths: IgiLevelPaths = level.paths ?? LEVEL1_PATHS): Promise<AiLevelData> {
   const warnings: string[] = [];
   const common = new Map<string, QvmProgram>();
@@ -88,6 +117,24 @@ export async function loadAiLevelData(source: IAssetSource, level: IgiLevel, pat
 
   const taskById = new Map<number, IgiTask>();
   for (const t of level.tasks) if (t.id >= 0 && !taskById.has(t.id)) taskById.set(t.id, t);
+  // Parent task and its pre-order node index (= IgiLevel.tasks index) of every task.
+  const parentOf = new Map<IgiTask, { task: IgiTask; node: number }>();
+  {
+    let index = 0;
+    const walk = (t: IgiTask, parent: { task: IgiTask; node: number } | null) => {
+      const node = index++;
+      if (parent) parentOf.set(t, parent);
+      for (const c of t.children) walk(c, { task: t, node });
+    };
+    for (const r of level.taskRoots ?? []) walk(r, null);
+  }
+  /** The parent object of an attached AIGraph (pose from its parameters; moving parents are refreshed by the engine). */
+  const graphParentOf = (graphTask: IgiTask): AiGraphParent | null => {
+    const parent = parentOf.get(graphTask);
+    if (!parent || !GRAPH_ATTACHING_TYPES.has(parent.task.type)) return null;
+    const pose = parentPoseFromTask(parent.task) ?? { position: [0, 0, 0] as [number, number, number], matrix: [1, 0, 0, 0, 1, 0, 0, 0, 1] };
+    return { node: parent.node, position: pose.position, matrix: pose.matrix };
+  };
 
   const mission = new Map<number, QvmProgram>();
   const graphs = new Map<number, AiGraphInfo>();
@@ -110,7 +157,8 @@ export async function loadAiLevelData(source: IAssetSource, level: IgiLevel, pat
       return;
     }
     const p = task.params["Graph position"];
-    const position: V3 = Array.isArray(p) && p.length === 3 ? [Number(p[0]), Number(p[1]), Number(p[2])] : [0, 0, 0];
+    const offset: V3 = Array.isArray(p) && p.length === 3 ? [Number(p[0]), Number(p[1]), Number(p[2])] : [0, 0, 0];
+    const position = aiGraphPosition(offset, graphParentOf(task));
     const mid = task.params["Node cover midoffset"];
     graphs.set(id, { id, graph: readAiGraph(buffer), position, midOffset: typeof mid === "number" ? mid : 1 });
   }));

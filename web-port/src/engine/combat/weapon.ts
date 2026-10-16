@@ -113,6 +113,7 @@ import { addCappedAmmo, type PickupInventory } from "./pickups";
 import { fallbackExtras, type WeaponExtras } from "./weapon-tags";
 import type { Mat3 } from "../../loaders/coords";
 import { grenadeSystemOf, playerThrowVelocity } from "./grenade";
+import { M203, directionBasis, m203LaunchVelocity, projectileSystemOf } from "./projectiles";
 
 const TICK = 1 / 30;
 /** S7: arms trigger 4 of FireAnim1 pulls the pin, trigger 3 of FireAnim2 throws (005.iff clips 24 / 25) [observed]. */
@@ -126,6 +127,12 @@ const MEDIPACK_POOL = "AMMO_ID_MEDIPACK";
 const ARMS_SKELETON = 5;
 /** Binocular range ray: 4096000 units = 1000 m (double 0x531550, FUN_0046ff00). */
 const BINOCULAR_RANGE_M = 1000;
+/** combat: the M16A2 and its M203 pool (S1 0x40ec96, full exe). */
+const M203_WEAPON = "WEAPON_ID_M16A2";
+const M203_POOL = "AMMO_ID_M203";
+/** combat: GunSPAS12 reload clips (arms 005.iff: 61 open + 2 shells sound, 62 one shell, 63 close / pump) and the first blend (0x3ecccccd). */
+const SPAS_RELOAD_CLIPS = { open: 61, shell: 62, close: 63 } as const;
+const SPAS_RELOAD_BLEND = Math.fround(0.4);
 
 /** Weapon state machine states (slots of the table at 0x5366d0); 13 = S4's raise half (FUN_0040f400). */
 export const WEAPON_STATE = {
@@ -149,6 +156,8 @@ export const WEAPON_STATE = {
   medipack: 10,
   medipackHeal: 16,
   medipackEnd: 17,
+  /** combat: S6, the M16A2's M203 (enter 0x40f4a0 full exe: FireAnim2, the alternate-fire request; clip end -> S1). */
+  m203: 6,
 } as const;
 type WeaponStateId = (typeof WEAPON_STATE)[keyof typeof WEAPON_STATE];
 
@@ -195,6 +204,11 @@ export interface WeaponSystem extends PickupInventory {
   readonly requested: string | null;
   /** The binoculars are out (Binoculars key). */
   readonly binocularMode: boolean;
+  /**
+   * combat: one of the player's bullets from another gun the player works (a StationaryGun's M2HB):
+   * FUN_00479e30 with that weapon's damage / penetration, hitting soldiers as the player's bullets do.
+   */
+  shootBullet(spec: LevelWeapon, from: Vec3, dir: Vec3): void;
 }
 
 interface Item {
@@ -259,9 +273,10 @@ export function createWeaponSystem(ctx: GameContext): WeaponSystem {
   let categoryIndex = 0;
   /** de4: weapon to return to when the binoculars are put away (binocular mode while set). */
   let binoReturn: Item | null = null;
-  /** 4d0 weapon active, 4d1 fire request, 4d3 fired last use. */
+  /** 4d0 weapon active, 4d1 fire request, 4d3 fired last use; combat: 4d2 alternate request (S6). */
   let active = false;
   let fireRequest = false;
+  let altRequest = false;
   let fired = false;
   /** d58 / d5c: arms mode playing / wanted by the movement. */
   let armsMode = 0;
@@ -544,6 +559,11 @@ export function createWeaponSystem(ctx: GameContext): WeaponSystem {
         applyMode(1);
         ctx.events.emit(GameEvent.DryFire);
         break;
+      case WEAPON_STATE.m203:
+        // 0x40f4a0: the alternate request +0x4d2 = 1, FireAnim2 (arms clip 39) with no loop and no blend.
+        altRequest = true;
+        playFireClip(1, false);
+        break;
       case WEAPON_STATE.holstered:
         // FUN_0040ea70: FUN_00413780(human, 0) - arms mode 0 (wanted mode 0 too).
         applyMode(0);
@@ -622,6 +642,19 @@ export function createWeaponSystem(ctx: GameContext): WeaponSystem {
               return;
             }
           }
+          // combat: AlternateFire (Fire not held) with the M16A2 in the hand (0x40ec96, full exe): with the
+          // UnlimitedAmmo flag S6 at once, else an AMMO_ID_M203 round leaves the pool (0x40ed08) -> S6.
+          if (!cur.fire && cur.alt && hand.spec.scriptId === M203_WEAPON) {
+            if (unlimitedAmmo()) {
+              enter(WEAPON_STATE.m203);
+              return;
+            }
+            if ((reserves[M203_POOL] ?? 0) > 0) {
+              reserves[M203_POOL] -= 1;
+              enter(WEAPON_STATE.m203);
+              return;
+            }
+          }
           if (wantsReload(hand, cur.reload)) {
             resetFirstPersonFov(fp);
             enter(WEAPON_STATE.reload);
@@ -678,6 +711,14 @@ export function createWeaponSystem(ctx: GameContext): WeaponSystem {
         if (!it) {
           active = true;
           enter(WEAPON_STATE.ready);
+          return;
+        }
+        // combat: GunSPAS12's own reload method (FUN_00472ae0): shell by shell.
+        if (it.extras.taskType === "TASKTYPE_GUNSPAS12") {
+          if (spasReload(it, animEnded)) {
+            active = true;
+            enter(WEAPON_STATE.ready);
+          }
           return;
         }
         let done = false;
@@ -852,6 +893,63 @@ export function createWeaponSystem(ctx: GameContext): WeaponSystem {
         // FUN_0040f5f0: S1 when the clip ends.
         if (animEnded) enter(WEAPON_STATE.ready);
         return;
+      case WEAPON_STATE.m203:
+        // S6 tick (0x40fd70): back to S1 when the clip ends.
+        if (animEnded) enter(WEAPON_STATE.ready);
+        return;
+    }
+  }
+
+  /**
+   * GunSPAS12 reload FUN_00472ae0 [recovered, full exe], called each S3 tick (state +0x1ac): no AMMO_ID_12
+   * record or an empty pool in state 0 -> done at once; 0: arms clip 61 with a 0.4 s blend -> 1; 1: clip
+   * end -> clip 62 -> 2; 2: clip end -> when the clip is not full and the pool not empty, one shell (pool - 1,
+   * clip + 1) and clip 62 again unless it was the last missing one; otherwise clip 63 -> 3; 3: clip end ->
+   * done. The UnlimitedAmmo flag is not read (the pool is).
+   */
+  function spasReload(it: Item, animEnded: boolean): boolean {
+    const pool = it.pool;
+    const has = pool !== null && pool in reserves;
+    const count = has ? reserves[pool!] : 0;
+    if ((!has || count === 0) && it.reloadPhase === 0) return true;
+    switch (it.reloadPhase) {
+      case 0:
+        fp.arms.play(SPAS_RELOAD_CLIPS.open, false, SPAS_RELOAD_BLEND);
+        it.reloadPhase = 1;
+        ctx.events.emit(GameEvent.ReloadStart, { weaponId: it.spec.scriptId });
+        return false;
+      case 1:
+        if (animEnded) {
+          fp.arms.play(SPAS_RELOAD_CLIPS.shell, false, 0);
+          it.reloadPhase = 2;
+        }
+        return false;
+      case 2:
+        if (animEnded) {
+          const size = it.spec.roundsPerClip;
+          const before = it.clip;
+          if (size !== before && count !== 0) {
+            reserves[pool!] = count - 1;
+            it.clip += 1;
+            if (size - before !== 1) {
+              fp.arms.play(SPAS_RELOAD_CLIPS.shell, false, 0);
+              return false;
+            }
+          }
+          fp.arms.play(SPAS_RELOAD_CLIPS.close, false, 0);
+          it.reloadPhase = 3;
+        }
+        return false;
+      case 3:
+        if (animEnded) {
+          it.reloadPhase = 0;
+          ctx.events.emit(GameEvent.ReloadEnd, { weaponId: it.spec.scriptId });
+          return true;
+        }
+        return false;
+      default:
+        it.reloadPhase = 0;
+        return true;
     }
   }
 
@@ -894,6 +992,38 @@ export function createWeaponSystem(ctx: GameContext): WeaponSystem {
       cooked: 0,
       tags: it.extras.grenade,
       thrower: "player",
+    });
+  }
+
+  /** IGI direction of an engine vector (x, z, -y)^-1. */
+  const igiDir = (v: THREE.Vector3): [number, number, number] => [v.x, -v.z, v.y];
+
+  /**
+   * FUN_00473510's launch [recovered, full exe]: velocity = view col 1 x f32(km/h x 4096000) x 9.259259e-6,
+   * "m203_launch_1" at the gun (the eye), the M203 at the eye with the direction's basis (FUN_00414a60).
+   * No kick, no spread, no AI event, no casing.
+   */
+  function launchM203(it: Item): void {
+    const o = ctx.level?.originIgi;
+    if (!o) return;
+    const tags = it.extras.m203 ?? M203.defaults;
+    aim.set(0, 0, -1).applyQuaternion(view);
+    const d = igiDir(aim);
+    const at: [number, number, number] = [eye.x * 4096 + o[0], -eye.z * 4096 + o[1], eye.y * 4096 + o[2]];
+    (ctx.systems.audio as { playAt?(n: string, p: Vec3): unknown } | null)?.playAt?.(M203.launchSound, [eye.x, eye.y, eye.z]);
+    projectileSystemOf(ctx).spawnM203({
+      position: at, velocity: m203LaunchVelocity(d, tags.muzzleKmh), matrix: directionBasis(d), model: tags.model,
+      explosionRadiusM: tags.explosionRadiusM, activateRadius: tags.activateRadius, owner: "player",
+    });
+  }
+
+  /** The player's RPG18 round: a Missile at the eye along the pellet direction (FUN_00429a30). */
+  function launchMissile(it: Item, from: Vec3, dirEngine: Vec3): void {
+    const o = ctx.level?.originIgi;
+    if (!o || !it.extras.missileModel) return;
+    projectileSystemOf(ctx).spawnMissile({
+      position: [from[0] * 4096 + o[0], -from[2] * 4096 + o[1], from[1] * 4096 + o[2]], direction: [dirEngine[0], -dirEngine[2], dirEngine[1]],
+      muzzleVelocity: it.spec.muzzleVelocity, model: it.extras.missileModel, owner: "player", sourceWeaponId: it.spec.weaponNumber,
     });
   }
 
@@ -1001,6 +1131,9 @@ export function createWeaponSystem(ctx: GameContext): WeaponSystem {
         knifeStab(ctx, position, [dir.x, dir.y, dir.z], [right.x, right.y, right.z], it.spec);
       } else if (it.extras.projectileType === "TASKTYPE_GRENADE") {
         throwGrenade(it);
+      } else if (it.extras.projectileType === "TASKTYPE_MISSILE") {
+        // combat: the RPG18's rocket (FUN_004298a0 -> FUN_00429a30) from the eye along the aim.
+        launchMissile(it, position, [dir.x, dir.y, dir.z]);
       } else if (it.extras.projectileType !== null) {
         shoot(position, [dir.x, dir.y, dir.z], Math.max(1, it.spec.rangeMetres), it);
       }
@@ -1151,6 +1284,9 @@ export function createWeaponSystem(ctx: GameContext): WeaponSystem {
         gunUse(it, u);
         break;
     }
+    // combat: GunM16A2's use (FUN_00473510) after the base Gun's: the alternate request launches an M203 grenade.
+    if (altRequest && it.extras.taskType === "TASKTYPE_GUNM16A2") launchM203(it);
+    altRequest = false;
     fireRequest = false;
     fired = u.fired;
     // arms+0x128 / +0x134 = (kick + offset) x 0.9: the player controller applies the x0.9 to the
@@ -1235,6 +1371,8 @@ export function createWeaponSystem(ctx: GameContext): WeaponSystem {
     fireRequest = fired = false;
     armsMode = desiredMode = 0;
     knifeCount = 0;
+    altRequest = false;
+    projectileSystemOf(ctx).clear();
     grenadeTickSound?.kill();
     grenadeTickSound = null;
     grenadePin = false;
@@ -1279,6 +1417,9 @@ export function createWeaponSystem(ctx: GameContext): WeaponSystem {
       return hand?.extras.taskType ?? null;
     },
     reserveOf: (pool: string) => reserves[pool] ?? 0,
+    shootBullet(spec, from, dir) {
+      shoot(from, dir, Math.max(1, spec.rangeMetres), { spec } as Item);
+    },
     reloadSeconds: (id: string) => {
       const clip = anim?.clips.get(ctx.level?.weapons.get(id)?.firstPersonAnims.reload ?? -1);
       return clip ? clip.seconds : 0;
@@ -1288,6 +1429,8 @@ export function createWeaponSystem(ctx: GameContext): WeaponSystem {
       for (const it of items) it.extras = extrasFor(it.spec);
       // The soldiers' grenades read the same weaponconfig tags (FUN_00413b70 -> +0x6e0; combat/grenade.ts).
       grenadeSystemOf(ctx).setWeaponTags(new Map([...extras].map(([id, x]) => [id, x.grenade])));
+      // combat: the soldiers' RPG18 rockets read the same tag (projectiles.ts).
+      projectileSystemOf(ctx).setMissileModels(new Map([...extras].filter(([, x]) => !!x.missileModel).map(([id, x]) => [id, x.missileModel!])));
     },
     reset,
     setGunMatrixSource(source) {

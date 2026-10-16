@@ -331,6 +331,108 @@ export interface UiFont {
   glyphs: UiGlyph[];
 }
 
+/** ILFF chunks of a file: tag, size, next (relative, 0 = last), data at +16 [recovered FUN_004b7490 / FUN_004b7470]. */
+function ilffChunks(view: DataView, first: number, name: string): Map<string, { offset: number; size: number }[]> {
+  const out = new Map<string, { offset: number; size: number }[]>();
+  const tagAt = (o: number) => String.fromCharCode(view.getUint8(o), view.getUint8(o + 1), view.getUint8(o + 2), view.getUint8(o + 3));
+  for (let p = first, guard = 0; p !== -1 && guard < 4096; guard++) {
+    need(view, p, 16, `${name} chunk header`);
+    const tag = tagAt(p);
+    const size = view.getUint32(p + 4, true);
+    const next = view.getUint32(p + 12, true);
+    need(view, p + 16, size, `${name} ${tag} chunk`);
+    const list = out.get(tag) ?? [];
+    list.push({ offset: p + 16, size });
+    out.set(tag, list);
+    p = next ? p + next : -1;
+  }
+  return out;
+}
+
+/**
+ * Decode an ILFF FONT `.fnt` (the full game's fonts; the one-mission build has LOOP v10 fonts)
+ * [recovered FUN_004b6720 0x4b6760-0x4b6890 of the full-game exe]:
+ *   FNTH: u32 proportional, glyph records, ?, space advance, cell width, line height;
+ *   TRAN: 256 x u16, low byte = glyph number of the character (1-based: record n - 1; 0 = none);
+ *   ANMF: 40-byte records {f32 ?, u0, v0, u1, v1; s16 texture @0x14, width, height, advance, ..., x @0x22, y @0x24}
+ *     (FUN_004b6540's last five arguments; the LOOP paths pass 0, 0, 0, 1.0, 1.0);
+ *   TEXH + BODY pairs: the textures (u16 width @0xe, height @0x10, bits @0x16; u32 format @0, as decodeUiPixels).
+ * Glyph g (1..count, the UiFont charMap convention) is ANMF record g - 1.
+ */
+export function readIlffFont(buffer: ArrayBuffer, name = "font"): UiFont {
+  const view = new DataView(buffer);
+  need(view, 0, 20, `${name} ILFF header`);
+  const tag = (o: number) => String.fromCharCode(view.getUint8(o), view.getUint8(o + 1), view.getUint8(o + 2), view.getUint8(o + 3));
+  if (tag(0) !== "ILFF" || tag(16) !== "FONT") throw new Error(`${name}: not an ILFF FONT`);
+  const chunks = ilffChunks(view, 20, name);
+  const one = (t: string) => {
+    const c = chunks.get(t)?.[0];
+    if (!c) throw new Error(`${name}: no ${t} chunk`);
+    return c;
+  };
+  const fnth = one("FNTH");
+  const tran = one("TRAN");
+  const anmf = one("ANMF");
+  const proportional = view.getUint32(fnth.offset, true) !== 0;
+  const records = view.getUint32(fnth.offset + 4, true);
+  const spaceAdvance = view.getUint32(fnth.offset + 12, true);
+  const cellWidth = view.getUint32(fnth.offset + 16, true);
+  const lineHeight = view.getUint32(fnth.offset + 20, true);
+  if (records < 1 || records > 255 || records * 40 > anmf.size) throw new Error(`${name}: bad FNTH glyph count ${records}`);
+  // Textures, in TEXH / BODY order.
+  const heads = chunks.get("TEXH") ?? [];
+  const bodies = chunks.get("BODY") ?? [];
+  if (!heads.length || heads.length !== bodies.length) throw new Error(`${name}: TEXH / BODY chunks do not pair up`);
+  const textures = heads.map((h, i) => {
+    const format = view.getUint32(h.offset, true);
+    const width = view.getUint16(h.offset + 0xe, true);
+    const height = view.getUint16(h.offset + 0x10, true);
+    const bits = view.getUint16(h.offset + 0x16, true);
+    const rowBytes = (bits * view.getUint16(h.offset + 0x12, true)) >> 3;
+    const rgba = decodeUiPixels(view, bodies[i].offset, format, rowBytes, width, height, `${name} texture ${i}`);
+    return { width, height, rgba };
+  });
+  const charMap = new Uint8Array(256);
+  for (let c = 0; c < 256; c++) {
+    const g = view.getUint8(tran.offset + 2 * c);
+    if (g > records) throw new Error(`${name}: character ${c} maps to glyph ${g} > ${records}`);
+    charMap[c] = g;
+  }
+  const glyphs: UiGlyph[] = [];
+  for (let g = 0; g < records; g++) {
+    const r = anmf.offset + g * 40;
+    const u = view.getFloat32(r + 4, true);
+    const v = view.getFloat32(r + 8, true);
+    const texture = textures[view.getInt16(r + 0x14, true)];
+    if (!texture) throw new Error(`${name}: glyph ${g} names a missing texture`);
+    const width = view.getInt16(r + 0x16, true);
+    const height = view.getInt16(r + 0x18, true);
+    const advance = view.getInt16(r + 0x1a, true);
+    const x = view.getInt16(r + 0x22, true);
+    const y = view.getInt16(r + 0x24, true);
+    const px = Math.round(u * texture.width);
+    const py = Math.round(v * texture.height);
+    const rgba = new Uint8ClampedArray(Math.max(0, width) * Math.max(0, height) * 4);
+    for (let row = 0; row < height; row++) {
+      for (let col = 0; col < width; col++) {
+        const sx = px + col;
+        const sy = py + row;
+        if (sx < 0 || sy < 0 || sx >= texture.width || sy >= texture.height) continue;
+        rgba.set(texture.rgba.subarray((sy * texture.width + sx) * 4, (sy * texture.width + sx) * 4 + 4), (row * width + col) * 4);
+      }
+    }
+    glyphs.push({ width, height, x, y, advance, rgba });
+  }
+  return { proportional, spaceAdvance, lineHeight, cellWidth, charMap, glyphs };
+}
+
+/** A `.fnt` of either build: LOOP v10 (one-mission build) or ILFF FONT (full game). */
+export function readAnyFont(buffer: ArrayBuffer, name = "font"): UiFont {
+  const view = new DataView(buffer);
+  if (view.byteLength >= 20 && view.getUint32(0, true) === 0x46464c49) return readIlffFont(buffer, name);
+  return readFont(buffer, name);
+}
+
 /** Decode a LOOP v10 `.fnt`.  Throws naming the offset on any anomaly. */
 export function readFont(buffer: ArrayBuffer, name = "font"): UiFont {
   const view = new DataView(buffer);
@@ -470,7 +572,7 @@ export function readUiArchive(buffer: ArrayBuffer): Map<string, UiAsset> {
   const out = new Map<string, UiAsset>();
   for (const m of readIlffMembers(buffer)) {
     const short = m.name.slice(m.name.lastIndexOf("/") + 1);
-    if (short.endsWith(".fnt")) out.set(short, { kind: "font", font: readFont(m.payload, m.name) });
+    if (short.endsWith(".fnt")) out.set(short, { kind: "font", font: readAnyFont(m.payload, m.name) });
     else if (short.endsWith(".spr") || short.endsWith(".pic")) {
       out.set(short, { kind: "sprite", sprite: readUiSprite(m.payload, m.name) });
     }

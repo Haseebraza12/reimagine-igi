@@ -595,8 +595,16 @@ export class HumanAi {
         if (this.alarmControlId === -1) return 0;
         return this.taskName(this.alarmControlId) ? (this.world.alarmIsOn(this.alarmControlId) ? 1 : 0) : 0;
       }
-      case "AIFunction_GetGunnerStatus":
-        return 0; // no StationaryGun tasks are simulated
+      case "AIFunction_GetGunnerStatus": {
+        // FUN_0044e5e0 (full exe): IsInUse (FUN_00475370) of the gun, 0 when unset or unknown (logged).
+        if (this.gunnerId === -1) return 0;
+        const gun = this.world.hooks.stationaryGun?.(this.gunnerId) ?? null;
+        if (!gun) {
+          this.world.hooks.log?.(`StationaryGun ID #${this.gunnerId} not defined`);
+          return 0;
+        }
+        return gun.inUse ? 1 : 0;
+      }
       case "AIFunction_SetScriptIntegerValue": {
         const slot = c.argInt(0);
         this.intSlots.set(slot, c.argInt(1));

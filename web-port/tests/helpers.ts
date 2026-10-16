@@ -2,12 +2,18 @@
  * Shared helpers for loader tests: real-raw-file access and an in-memory
  * IAssetSource implementation (no network, no disk).
  */
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import type { IAssetSource } from "../src/contracts";
 
-/** Absolute path of web-port/game-data (original game files staged by `npm run stage`). */
-export const RAW_ROOT = fileURLToPath(new URL("../game-data", import.meta.url));
+/**
+ * The staged original files the tests read. Their recorded values come from the one-mission
+ * build (the first installation); when the full game is staged into game-data, that build is
+ * kept in game-data-demo and the tests use it. IGI_TEST_DATA=<dir> chooses another.
+ */
+const demo = fileURLToPath(new URL("../game-data-demo", import.meta.url));
+export const RAW_ROOT = process.env.IGI_TEST_DATA ?? (existsSync(demo) ? demo : fileURLToPath(new URL("../game-data", import.meta.url)));
 
 /** Read a staged game file as an ArrayBuffer (throws when missing). */
 export async function readRaw(relativePath: string): Promise<ArrayBuffer> {

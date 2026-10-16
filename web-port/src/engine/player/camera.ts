@@ -52,6 +52,7 @@ import type { GameContext } from "../context";
 import { lookChannel, lookSensitivity } from "../look";
 import { TRI_BULLET, type RayHit } from "../world/collision";
 import { FIRST_PERSON_CONSTANTS, type ViewMode } from "./first-person";
+import { stationaryGunsOf } from "../combat/stationary-guns";
 
 const UNITS_PER_METRE = 4096;
 const U = 1 / UNITS_PER_METRE;
@@ -119,6 +120,8 @@ export interface CameraController {
  */
 export function playerViewMode(ctx: GameContext): ViewMode {
   if (!ctx.player.alive) return 5;
+  // combat: FUN_0045fcd0 sets mode 4 while the view object's override is on (a StationaryGun user, FUN_004658d0).
+  if (stationaryGunsOf(ctx)?.playerView()) return 4;
   const busy = ctx.systems.player?.interactions.busy ?? null;
   return busy !== null ? 3 : 1;
 }
@@ -296,15 +299,28 @@ export function createCameraController(ctx: GameContext): CameraController {
     if (orbit.target >= THIRD_PERSON.distance) orbit.target = THIRD_PERSON.distance;
   };
 
-  const fovYDeg = (): number => verticalFovDeg(mode === 1 ? tanX() : FIRST_PERSON_CONSTANTS.tanWorld);
+  // Modes 1 and 4 use the view object's FOV (arms +0x1e4, FUN_0045fcd0); the orbits tan(pi/4).
+  const fovYDeg = (): number => verticalFovDeg(mode === 1 || mode === 4 ? tanX() : FIRST_PERSON_CONSTANTS.tanWorld);
 
   return {
     update(_dt: number): void {
       // The Euler order first: setting it re-derives the quaternion from the angles.
       if (ctx.camera.rotation.order !== "YXZ") ctx.camera.rotation.order = "YXZ";
       const m = sync();
+      const override = m === 4 ? stationaryGunsOf(ctx)?.playerView() ?? null : null;
       if (m === 1) {
         computeEye(ctx, ctx.camera.position, ctx.camera.quaternion);
+      } else if (override) {
+        // Mode 4 (FUN_0045fcd0): the override eye and the gun matrix (columns right, barrel, up; IGI -> engine (x, z, -y)).
+        const o = ctx.level?.originIgi ?? [0, 0, 0];
+        const e = override.eye;
+        ctx.camera.position.set((e[0] - o[0]) * U, (e[2] - o[2]) * U, -(e[1] - o[1]) * U);
+        const g = override.matrix;
+        const right = new THREE.Vector3(g[0], g[6], -g[3]);
+        const fwd = new THREE.Vector3(g[1], g[7], -g[4]);
+        const upv = new THREE.Vector3(g[2], g[8], -g[5]);
+        look.makeBasis(right, upv, fwd.negate());
+        ctx.camera.quaternion.setFromRotationMatrix(look);
       } else {
         computeEye(ctx, eye, view);
         place(ctx.camera.position);

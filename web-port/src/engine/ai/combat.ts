@@ -68,6 +68,8 @@ import {
 import type { ActionImpl, ActionRecord, HumanAi } from "./human-ai";
 import { BODY, CH } from "./motor";
 import type { SharedTarget } from "./world";
+import { GUNNER_ARC_DELAY, gunnerTick, type GunnerData } from "./gunner";
+import { rpgTick, type RpgData } from "./rpg-combat";
 import { EV, dist, headingForward, headingRight, type AiEvent, type AiHuman, type V3 } from "./types";
 
 const DEG = Math.PI / 180;
@@ -158,6 +160,10 @@ export interface CombatData {
   /** Motor action seen by a grenade / close-combat sub-state. */
   seen: boolean;
   rollDir: number;
+  /** GUNNER (FUN_0048d2c0): the arc counter, the not-visible ticks and the gun's fire sequence. */
+  gunner?: GunnerData;
+  /** RPG (FUN_0048cb40): stand / kneel tick, "last" (H+0x3dd0), not-visible ticks, the sub-state. */
+  rpg?: RpgData;
 }
 
 function kindOf(aiType: string): Kind | null {
@@ -260,10 +266,18 @@ function startCombat(kind: Kind): ActionImpl<CombatData> {
       c.guardCount = 0;
       c.seen = false;
       c.rollDir = 0;
+      if (kind === "gunner") c.gunner = { arcCount: GUNNER_ARC_DELAY, notVisible: 0, fire: null };
+      // FUN_0048cb40: the kneel tick when the crouch flag (+0x33d) is set.
+      if (kind === "rpg") c.rpg = { kneel: ai.motor.crouched, last: -1, notVisible: 0, sub: null, fire: null };
       if (ai.currentNode >= 0 && !ai.reservation) ai.reserveCell(ai.currentNode, ai.pos);
     },
     update(ai, rec) {
       const c = rec.data;
+      // RPG: its ticks run the common refresh themselves (FUN_0048a920 inside 0x48cbd0 / 0x48cdf0).
+      if (c.kind === "rpg") {
+        rpgCombatTick(ai, rec);
+        return;
+      }
       if (!commonTick(ai, rec)) return;
       switch (c.kind) {
         case "patrol":
@@ -271,6 +285,9 @@ function startCombat(kind: Kind): ActionImpl<CombatData> {
           break;
         case "female":
           patrolTick(ai, rec, true);
+          break;
+        case "gunner":
+          gunnerCombatTick(ai, rec);
           break;
         default:
           guardTick(ai, rec);
@@ -556,6 +573,50 @@ function guardTick(ai: HumanAi, rec: ActionRecord<CombatData>): void {
   }
   const next = c.sub as Sub | null;
   if (next && next(ai, c)) setSub(c, null, "");
+}
+
+/** GUNNER (FUN_0048d340, ai/gunner.ts) with this module's target record and guard tick. */
+function gunnerCombatTick(ai: HumanAi, rec: ActionRecord<CombatData>): void {
+  const c = rec.data;
+  c.gunner ??= { arcCount: GUNNER_ARC_DELAY, notVisible: 0, fire: null };
+  gunnerTick(ai, rec, {
+    data: c.gunner,
+    visible: c.visible,
+    get first() {
+      return c.first;
+    },
+    set first(v: boolean) {
+      c.first = v;
+    },
+    aim: () => lastAim(ai, c),
+    setStatus: (status) => setStatus(ai, c, status),
+    firing: () => (c.record ? c.record.firing(ai) : 0),
+    guard: () => guardTick(ai, rec),
+    end: () => ai.endAction(rec),
+  });
+}
+
+/** RPG (ai/rpg-combat.ts) with this module's target record. */
+function rpgCombatTick(ai: HumanAi, rec: ActionRecord<CombatData>): void {
+  const c = rec.data;
+  c.rpg ??= { kneel: ai.motor.crouched, last: -1, notVisible: 0, sub: null, fire: null };
+  rpgTick(ai, rec, {
+    data: c.rpg,
+    get first() {
+      return c.first;
+    },
+    set first(v: boolean) {
+      c.first = v;
+    },
+    refresh: () => commonTick(ai, rec),
+    visible: () => c.visible,
+    inCone: () => {
+      const h = targetHuman(ai, c);
+      return !!(h && ai.slots.get(h.key)?.inCone);
+    },
+    aim: () => lastAim(ai, c),
+    end: () => ai.endAction(rec),
+  });
 }
 
 const combatByKind = new Map<Kind, ActionImpl<CombatData>>();

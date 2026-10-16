@@ -889,6 +889,9 @@ export class SecurityCameraDetector {
  * whose model is empty are skipped [inferred: FUN_004c82b0 / FUN_004e4cc0 succeed
  * for every named model]. Run-time re-inits (Car / Heli / StationaryGun "Can
  * fire" falling to 0: 0x42dbcf, 0x430c68, 0x46d201) also advance the counter.
+ * The HumanAIs of GuardGenerator templates take none here: the generator's
+ * compile deletes its children (FUN_00488220, full exe) and each spawn compiles
+ * a fresh copy, which takes the counter's value then (FUN_00488000).
  */
 export function perceptionPhases(tasks: Pick<MissionTasks, "nodes">, counter = 0): { phases: Map<number, number>; next: number } {
   const phases = new Map<number, number>();
@@ -898,7 +901,13 @@ export function perceptionPhases(tasks: Pick<MissionTasks, "nodes">, counter = 0
     c = (c + 1) & 3;
   };
   for (const n of tasks.nodes) if (n.type === "SCamera") take(n.index);
+  /** GuardGenerator templates (FUN_00488220 deletes them at the generator's compile): their phase comes at the spawn. */
+  const templated = (n: MissionNode): boolean => {
+    for (let p = n.parent; p >= 0; p = tasks.nodes[p].parent) if (tasks.nodes[p].type === "GuardGenerator") return true;
+    return false;
+  };
   for (const n of tasks.nodes) {
+    if (n.type === "HumanAI" && templated(n)) continue;
     if (n.type === "HumanAI" || n.type === "AIStationaryGunHolder") take(n.index);
     else if ((n.type === "Car" || n.type === "Heli") && str(n.task, "Model") !== "") take(n.index);
   }
@@ -1411,6 +1420,12 @@ export interface MissionHost {
   call?(name: string, args: readonly number[]): number | void;
   /** Update a task the runtime does not implement (humans, weapons, pickups, ...); return true when handled. */
   updateTask?(node: MissionNode, runtime: MissionRuntime): boolean;
+  /**
+   * turrets: a host-updated task (updateTask returned false) after its children were updated: the
+   * part of its update that follows the children (the Car update FUN_0042e320's attached
+   * children and turrets, combat/vehicle-weapons.ts).
+   */
+  afterTaskChildren?(node: MissionNode, runtime: MissionRuntime): void;
   /** A ConditionalContainer added (true) or removed (false) its children to / from the world. */
   onContainerWorld?(container: ConditionalContainerTask, inWorld: boolean): void;
   onStatusMessage?(message: StatusMessageTask, levelFlowTick: number): void;
@@ -1426,7 +1441,60 @@ export interface MissionHost {
   doorBlocked?(door: DoorTask, state: DoorState): boolean;
   cameraSighting?(camera: SecurityCameraTask): CameraSighting | null;
   onExplode?(id: number, type: string): void;
+  /** An event of a registered task behaviour (sounds, effects, ...): `TaskBehaviourContext.emit`. */
+  onTaskEvent?(node: MissionNode, event: string, data?: unknown): void;
+  /** One draw of the level random generator (+0x2c, the AI's): [0, 1) (FUN_004aaa50). */
+  random?(): number;
+  /** One draw of the level random generator: next() mod n (FUN_004aaaa0; full exe FUN_004b47c0). */
+  randomInt?(n: number): number;
+  /** Engine-side queries a behaviour needs (the player position, a model radius, ...). */
+  query?(name: string, ...args: unknown[]): unknown;
   warn?(message: string): void;
+}
+
+/** Storage kind of a task member: char / int read as ints, float / double as floats. */
+export type TaskMemberKind = "char" | "int" | "float" | "double";
+
+/** What a registered behaviour sees of its node (see `registerTaskBehaviour`). */
+export interface TaskBehaviourContext {
+  readonly runtime: MissionRuntime;
+  readonly node: MissionNode;
+  /** The node's state: its members are fields of it. */
+  readonly state: Record<string, number>;
+  readonly host: MissionHost;
+  /** The compiled field in float mode; null when the field is empty (FUN_004e8360 false). */
+  eval(field: string): number | null;
+  /** (char)fistp(eval(field)), null when empty. */
+  evalByte(field: string): number | null;
+  /** Update the node's children (the tree pre-order). */
+  updateChildren(): void;
+  /** Tell the host (presentation: sounds, effects). */
+  emit(event: string, data?: unknown): void;
+}
+
+/**
+ * A task type implemented outside this file (src/loaders/objects/*). The
+ * runtime calls create at load (pre-order), compile after every node is
+ * created (the compile broadcast), and update at the node's place in the
+ * tick order; `members` are published as "<Type>_<id>.<member>".
+ */
+export interface TaskBehaviour {
+  expressions?: readonly string[];
+  members?: Readonly<Record<string, TaskMemberKind>>;
+  create?(c: TaskBehaviourContext): void;
+  compile?(c: TaskBehaviourContext): void;
+  update(c: TaskBehaviourContext): void;
+}
+
+const TASK_BEHAVIOURS = new Map<string, TaskBehaviour>();
+
+/** Register the behaviour of a task type (one per type; a later one replaces it). */
+export function registerTaskBehaviour(type: string, behaviour: TaskBehaviour): void {
+  TASK_BEHAVIOURS.set(type, behaviour);
+}
+
+export function taskBehaviour(type: string): TaskBehaviour | undefined {
+  return TASK_BEHAVIOURS.get(type);
 }
 
 interface Compiled { text: string; expr: QvmExpression }
@@ -1467,6 +1535,7 @@ export class MissionRuntime {
   private readonly doorState = new Map<number, DoorState>();
   private readonly cameraTarget = new Map<number, string | number | null>();
   private readonly areaMask = new Map<number, number>();
+  private readonly behaviourContexts = new Map<number, TaskBehaviourContext>();
   private levelFlowNode = -1;
 
   constructor(tasks: MissionTasks, host: MissionHost = {}) {
@@ -1573,6 +1642,22 @@ export class MissionRuntime {
     return this.levelFlowNode >= 0 ? this.state[this.levelFlowNode].nTick : 0;
   }
 
+  /** The ExplodeObject part of a subclass's update (FUN_0047fce0): children, then the explosion rule. */
+  updateExplodeObject(index: number): void {
+    this.updateExplosive(index);
+  }
+
+  /** Mutable state of a node driven by a registered behaviour (player uses, pickups). */
+  behaviourState(index: number): Record<string, number> {
+    return this.state[index];
+  }
+
+  /** Run node `index`'s registered behaviour now if it has one (a platform's early update, FUN_0043e290). */
+  updateBehaviourNow(index: number): void {
+    const b = TASK_BEHAVIOURS.get(this.tasks.nodes[index]?.type);
+    if (b) b.update(this.behaviourContext(index));
+  }
+
   doorStateAt(nodeIndex: number): DoorState | undefined {
     return this.doorState.get(nodeIndex);
   }
@@ -1618,10 +1703,14 @@ export class MissionRuntime {
           break;
         }
         case "ConditionalSound": Object.assign(s, { isRun: 0, isLastRun: 0, isPlaying: 0, nPlayTick: -1, started: 0, voice: 0 }); break; // FUN_00424620
-        default: break;
+        default: {
+          const b = TASK_BEHAVIOURS.get(n.type);
+          if (b) b.create?.(this.behaviourContext(i));
+          break;
+        }
       }
       if (n.id >= 0) {
-        const kinds = TASK_MEMBERS[n.type];
+        const kinds = TASK_MEMBERS[n.type] ?? TASK_BEHAVIOURS.get(n.type)?.members;
         if (kinds) for (const m of Object.keys(kinds)) if (m in s) this.members.set(`${n.type}_${n.id}.${m}`, () => this.state[i][m]);
       }
     });
@@ -1648,6 +1737,11 @@ export class MissionRuntime {
   private compileAll(): void {
     this.tasks.nodes.forEach((n, i) => {
       for (const field of TASK_EXPRESSION_FIELDS[n.type] ?? []) this.compile(i, field);
+      const b = TASK_BEHAVIOURS.get(n.type);
+      if (b) {
+        for (const field of b.expressions ?? []) this.compile(i, field);
+        b.compile?.(this.behaviourContext(i));
+      }
       if (n.type === "AreaActivate") this.areaMask.set(i, areaCriteriaMask(this.rec<AreaActivateTask>(i).criteria));
       if (n.type === "CutScene") {
         // FUN_004ecfa0 0x4ecfd6: fild 30; fmul Start time; fistp -> nTick = trunc(30 * Start time).
@@ -1810,13 +1904,39 @@ export class MissionRuntime {
         s.nTick += 1;
         return;
       }
-      default:
+      default: {
+        const b = TASK_BEHAVIOURS.get(n.type);
+        if (b) {
+          b.update(this.behaviourContext(index));
+          return;
+        }
         if (this.host.updateTask?.(n, this)) return;
         // Train (FUN_0042aa90), Heli (FUN_00430950) and Car update their
         // children (their AnimTask) after their own expressions; Building /
         // EditRigidObj inherit a child update (inferred).
         this.updateChildren(index);
+        this.host.afterTaskChildren?.(n, this);
+      }
     }
+  }
+
+  private behaviourContext(index: number): TaskBehaviourContext {
+    let c = this.behaviourContexts.get(index);
+    if (!c) {
+      const node = this.tasks.nodes[index];
+      c = {
+        runtime: this,
+        node,
+        state: this.state[index],
+        host: this.host,
+        eval: (field) => this.eval(index, field),
+        evalByte: (field) => this.evalByte(index, field),
+        updateChildren: () => this.updateChildren(index),
+        emit: (event, data) => this.host.onTaskEvent?.(node, event, data),
+      };
+      this.behaviourContexts.set(index, c);
+    }
+    return c;
   }
 
   private updateArea(index: number): void {

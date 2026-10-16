@@ -338,8 +338,23 @@ function friction(b: RigidBody, n: V3, g: number, grip: number, angular: number)
   b.angularMomentum = [f32(b.angularMomentum[0] * angular), f32(b.angularMomentum[1] * angular), f32(b.angularMomentum[2] * angular)];
 }
 
+/**
+ * A rigid object stepped by the physics-object step (demo FUN_004f2d00 = full exe FUN_004fc0e0):
+ * grenades and (turrets) the Missile. Its contact points are the type's (magic vertices).
+ */
+export interface RigidStepObject {
+  position: V3;
+  matrix: Mat3;
+  readonly body: RigidBody;
+  previousPosition: V3;
+  previousMatrix: Mat3;
+  contacts: number;
+  touching: boolean[];
+  readonly type: { readonly mass: number; readonly points: readonly GrenadePoint[] };
+}
+
 /** FUN_004f25c0: the contact points' paths; the first approaching hit gets the impulse and friction. */
-function contactPass(g: Grenade, world: GrenadeWorld): void {
+function contactPass(g: RigidStepObject, world: GrenadeWorld, angular: number): void {
   const points = g.type.points;
   if (points.length === 0) return;
   const b = g.body;
@@ -359,14 +374,19 @@ function contactPass(g: Grenade, world: GrenadeWorld): void {
     g.contacts++;
     g.touching[i] = true;
     impulse(b, g.matrix, n, r, vn, points[i].restitution);
-    friction(b, n, C.gravity, points[i].grip, C.angularDamping);
+    friction(b, n, C.gravity, points[i].grip, angular);
     return;
   }
 }
 
-/** FUN_004754c0 (one physics tick of a grenade). */
-export function stepGrenadePhysics(g: Grenade, world: GrenadeWorld): void {
-  if (grenadeAtRest(g)) return;
+/**
+ * The physics-object step FUN_004f2d00 (demo) / FUN_004fc0e0 (full exe) with collision on
+ * (+0x6d8, the default of FUN_004fb5f0): FUN_004f2bb0 / FUN_004fbf90 (weight -(g m) along world z
+ * in the body frame, integrate, L x angular, v x linear), the contact pass FUN_004f25c0 /
+ * FUN_004fb9a0, position += v above 40.96 units/tick, the inside test FUN_004f3240 /
+ * FUN_004fc620 (back to the previous pose, contact + 1) [recovered].
+ */
+export function stepRigidObject(g: RigidStepObject, world: GrenadeWorld, linear: number, angular: number): void {
   const b = g.body;
   const m = g.matrix;
   const old: V3 = [...g.position];
@@ -374,11 +394,11 @@ export function stepGrenadePhysics(g: Grenade, world: GrenadeWorld): void {
   const w = -(C.gravity * g.type.mass);
   b.add([f32(w * m[6]), f32(w * m[7]), f32(w * m[8])], [0, 0, 0]);
   g.matrix = b.integrate(m);
-  b.angularMomentum = [f32(b.angularMomentum[0] * C.angularDamping), f32(b.angularMomentum[1] * C.angularDamping), f32(b.angularMomentum[2] * C.angularDamping)];
-  b.velocity = [f32(b.velocity[0] * C.linearDamping), f32(b.velocity[1] * C.linearDamping), f32(b.velocity[2] * C.linearDamping)];
+  b.angularMomentum = [f32(b.angularMomentum[0] * angular), f32(b.angularMomentum[1] * angular), f32(b.angularMomentum[2] * angular)];
+  b.velocity = [f32(b.velocity[0] * linear), f32(b.velocity[1] * linear), f32(b.velocity[2] * linear)];
   b.updateSpeed();
   // +0x6d8 (collision on, FUN_004f2210).
-  contactPass(g, world);
+  contactPass(g, world, angular);
   if (C.moveThreshold < b.speed) g.position = [b.velocity[0] + old[0], b.velocity[1] + old[1], b.velocity[2] + old[2]];
   // FUN_004f3240: a point inside geometry puts the pose back (velocity kept).
   for (let i = 0; i < g.type.points.length; i++) {
@@ -393,6 +413,13 @@ export function stepGrenadePhysics(g: Grenade, world: GrenadeWorld): void {
   }
   g.previousPosition = [...g.position];
   g.previousMatrix = [...g.matrix];
+}
+
+/** FUN_004754c0 (one physics tick of a grenade). */
+export function stepGrenadePhysics(g: Grenade, world: GrenadeWorld): void {
+  if (grenadeAtRest(g)) return;
+  const b = g.body;
+  stepRigidObject(g, world, C.linearDamping, C.angularDamping);
   // FUN_004754c0: air drag without contact.
   if (g.contacts === 0) {
     b.velocity = [f32(b.velocity[0] * C.airDrag), f32(b.velocity[1] * C.airDrag), f32(b.velocity[2] * C.airDrag)];

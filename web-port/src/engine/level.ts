@@ -73,8 +73,16 @@ export interface LoadedLevel {
   dispose(): void;
 }
 
-/** Task types whose models move at run time (docs/mission.md: Door, Train, Heli, Car). */
-const MOVING_TASK_TYPES = new Set(["Door", "Train", "Heli", "Car"]);
+/**
+ * Task types whose models move or leave the world at run time (docs/mission.md: Door, Train,
+ * Heli, Car; docs/objects.md: Elevator, the Cabinet's drawer, GenericPickup; world/world-tasks.ts:
+ * the RotatingObject dish turns, the AlarmLight reflector spins and the lamp swaps models;
+ * loaders/plane.ts: Plane tasks fly; combat: the StationaryGun tripod turns with the gun's yaw,
+ * the AIStationaryGunHolder's turret ATTA turns).
+ */
+const MOVING_TASK_TYPES = new Set(["Door", "Train", "Heli", "Car", "Elevator", "Cabinet", "GenericPickup", "RotatingObject", "AlarmLight", "Plane", "StationaryGun", "AIStationaryGunHolder"]);
+/** Parents whose children move with them (0x547f40 "parent moved": the elevator's switch and doors). */
+const CARRYING_TASK_TYPES = new Set(["ConditionalContainer", "Elevator"]);
 
 /**
  * Keys of the tasks whose placed models can move or leave the world: doors and
@@ -93,7 +101,7 @@ export function dynamicTaskKeys(level: { taskRoots: IgiTask[] }): Set<number> {
   const walk = (task: IgiTask, inContainer: boolean) => {
     const key = index++;
     if (inContainer || MOVING_TASK_TYPES.has(task.type)) out.add(key);
-    const container = inContainer || task.type === "ConditionalContainer";
+    const container = inContainer || CARRYING_TASK_TYPES.has(task.type);
     for (const child of task.children) walk(child, container);
   };
   for (const root of level.taskRoots) walk(root, false);
@@ -103,8 +111,11 @@ export function dynamicTaskKeys(level: { taskRoots: IgiTask[] }): Set<number> {
 /** Characters stay this far inside the edge of the full-detail terrain (metres). */
 const PLAY_AREA_MARGIN = 2;
 
-/** Horizontal extent of the collision terrain, shrunk by the margin. */
-export function playAreaOf(positions: Float32Array): PlayArea {
+/**
+ * Horizontal extent of the collision terrain, shrunk by the margin; null (no limit) when the
+ * mission has no terrain triangles (level 14 of the full game: indoors on its models only).
+ */
+export function playAreaOf(positions: Float32Array): PlayArea | null {
   let minX = Infinity;
   let maxX = -Infinity;
   let minZ = Infinity;
@@ -117,9 +128,7 @@ export function playAreaOf(positions: Float32Array): PlayArea {
     if (z < minZ) minZ = z;
     if (z > maxZ) maxZ = z;
   }
-  if (!(maxX - minX > 2 * PLAY_AREA_MARGIN && maxZ - minZ > 2 * PLAY_AREA_MARGIN)) {
-    throw new Error("level: the collision terrain is empty");
-  }
+  if (!(maxX - minX > 2 * PLAY_AREA_MARGIN && maxZ - minZ > 2 * PLAY_AREA_MARGIN)) return null;
   return {
     minX: minX + PLAY_AREA_MARGIN,
     maxX: maxX - PLAY_AREA_MARGIN,

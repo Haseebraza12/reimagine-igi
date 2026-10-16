@@ -14,6 +14,8 @@ import {
   aiGraphClosestNode,
   aiGraphLegPoint,
   aiGraphNodeContains,
+  aiGraphNodeWorld,
+  aiGraphPosition,
   aiGraphPath,
   aiGraphRoute,
   aiGraphWaypoints,
@@ -158,11 +160,65 @@ describe("ai graph stream (synthetic)", () => {
     const good = new Uint8Array(syntheticGraph());
     const badMagic = good.slice();
     badMagic[0] = 0;
-    expect(() => readAiGraph(badMagic.buffer)).toThrow(/magic at 0x0/);
+    expect(() => readAiGraph(badMagic.buffer)).toThrow(/legacy/); // no magic: the untagged reader (FUN_004fa160)
     const badTag = good.slice();
     badTag[5] = 0x7f;
     expect(() => readAiGraph(badTag.buffer)).toThrow(/0x4: unknown tag/);
     expect(() => readAiGraph(good.slice(0, good.length - 3).buffer)).toThrow(/0x[0-9a-f]+/);
+  });
+
+  it("reads the untagged (no-magic) graph layout of FUN_004fa160 and its AIGraph handlers", () => {
+    const out: number[] = [];
+    const i32 = (v: number) => out.push(5, v & 255, (v >> 8) & 255, (v >> 16) & 255, (v >>> 24) & 255);
+    const f32 = (v: number) => {
+      const b = new Uint8Array(new Float32Array([v]).buffer);
+      out.push(6, ...b);
+    };
+    const v3 = (x: number, y: number, z: number) => out.push(8, ...new Uint8Array(new Float64Array([x, y, z]).buffer));
+    const text = (t: string) => out.push(9, t.length + 1, ...[...t].map((c) => c.charCodeAt(0)), 0);
+    const cap = 3;
+    i32(2); i32(cap); i32(1);
+    // node 0: extra f32, material 7, door, one handler pair then none
+    i32(0); v3(1, 2, 3); f32(0.25); f32(0.5); f32(0.5); i32(7); text("NODECRITERIA_DOOR"); i32(1); i32(9); i32(9); i32(0);
+    // node 2: no extra f32, no material (keeps 7), no criteria
+    i32(2); v3(4, 5, 6); f32(0); f32(1); text(""); i32(0); i32(0);
+    i32(0); i32(2); i32(1);
+    out.push(0, 10); i32(cap * cap * 8);
+    const route = new DataView(new ArrayBuffer(cap * cap * 8));
+    for (let i = 0; i < cap * cap; i++) {
+      route.setInt32(i * 8, -1, true);
+      route.setFloat32(i * 8 + 4, -1, true);
+    }
+    route.setInt32((cap * 2 + 0) * 8, 2, true);
+    route.setFloat32((cap * 2 + 0) * 8 + 4, 100, true);
+    out.push(...new Uint8Array(route.buffer));
+    const g = readAiGraph(new Uint8Array(out).buffer);
+    expect(g.maxNodes).toBe(cap);
+    expect(g.nodes.map((n) => [n.id, n.position, n.gamma, n.radius, n.material, n.flags, n.neighbours])).toEqual([
+      [0, [1, 2, 3], 0.25, 0.5, 7, AI_NODE_DOOR, [2]],
+      [2, [4, 5, 6], 0, 1, 7, 0, [0]],
+    ]);
+    expect(aiGraphRoute(g, 0, 2)).toEqual({ next: 2, cost: 100 });
+    expect(aiGraphRoute(g, 2, 0)).toBeNull();
+  });
+
+  it("attached graphs (FUN_004f0340 / FUN_004f0470): world = P (graph position + node) + parent; the square turns with P", () => {
+    const node = { id: 1, position: [4004, -13210, -8296] as [number, number, number], gamma: 0, radius: 0.5, material: 0, criteria: "", flags: 0, neighbours: [] };
+    // L14 graph 36 under Building_-1 (identity orientation): Anya's desk.
+    const desk = aiGraphPosition([-1370.1004638671875, 42218.6796875, 24826.203125], {
+      node: 1, position: [26382956, -49388352, 173753408], matrix: [1, 0, 0, 0, 1, 0, 0, 0, 1],
+    });
+    expect(aiGraphNodeWorld(node, desk)).toEqual([26382956 - 1370.1004638671875 + 4004, -49388352 + 42218.6796875 - 13210, 173753408 + 24826.203125 - 8296]);
+    // Unattached: the raw sum (the old reading put Anya 42 km below the room).
+    expect(aiGraphNodeWorld(node, aiGraphPosition([-1370.1004638671875, 42218.6796875, 24826.203125]))[2]).toBeCloseTo(16530.2, 1);
+    // A parent turned by 90 degrees: the offset turns too, and so does the node square.
+    const turned = aiGraphPosition([1000, 0, 0], { node: 1, position: [0, 0, 0], matrix: [0, -1, 0, 1, 0, 0, 0, 0, 1] });
+    const flat = { ...node, position: [0, 0, 0] as [number, number, number], radius: 1 };
+    expect(aiGraphNodeWorld(flat, turned)).toEqual([0, 1000, 0]);
+    expect(aiGraphNodeContains(flat, turned, [100, 1000 + 4000, 0], 0, false)).toBe(true);
+    expect(aiGraphNodeContains(flat, turned, [100, 1000 + 4200, 0], 0, false)).toBe(false);
+    // FUN_004a9600 on (dx, dy, 0): straight above the centre is "not on" the node.
+    expect(aiGraphNodeContains(flat, turned, [0, 1000, 500], 0, false)).toBe(false);
   });
 
   it("node square tests, closest node and leg points follow FUN_004f0610 / FUN_00500550 / FUN_00450e90", () => {

@@ -150,6 +150,8 @@ export function readTerrainLmp(buffer: ArrayBuffer): Array<{ side: number; data:
   while (p < buffer.byteLength) {
     if (p + 4 > buffer.byteLength) fail("truncated terrain.lmp record header");
     const side = view.getUint32(p, true);
+    // Zero padding after the last record (level 14 of the full game: 684 bytes) ends the list.
+    if (side === 0 && new Uint8Array(buffer, p).every((b) => b === 0)) break;
     if (side < 1 || side > 4096 || p + 4 + side * side > buffer.byteLength) fail(`bad terrain.lmp record at ${p}`);
     out.push({ side, data: new Uint8Array(buffer, p + 4, side * side) });
     p += 4 + side * side;

@@ -63,7 +63,6 @@ const REQUIRED = [
   "material/",
   "animtrigger/",
   "lod.qvm",
-  "config.qsc",
   "language/english/",
 ];
 

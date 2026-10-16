@@ -58,6 +58,13 @@ export interface WeaponExtras {
   grenade: { damage: number; radiusM: number; falloffM: number } | null;
   /** TASKTYPE_MEDIPACK: "Factor of human max damage to add for each round" (FUN_0046f100 -> +0x6e4; default 0.01), else null. */
   medipackFactor: number | null;
+  /**
+   * combat: TASKTYPE_GUNM16A2 "M203 - Muzzle velocity (km/h) / Explosion radius (meters) / Activate radius
+   * (meters) / Model" (FUN_004737f0 -> +0x6e4; defaults 270, 5, 1, "108_05_1"), else null.
+   */
+  m203?: { muzzleKmh: number; explosionRadiusM: number; activateRadius: number; model: string } | null;
+  /** combat: "Missile - Model" of a TASKTYPE_MISSILE projectile (RPG18: 110_02_1), else null. */
+  missileModel?: string | null;
 }
 
 /** f32 0.017453292 at 0x531684 (degrees -> radians as the exe multiplies). */
@@ -127,9 +134,24 @@ export function readWeaponExtras(weaponConfigQvm: ArrayBuffer): Map<string, Weap
         : null;
     const medipackFactor =
       taskType === "TASKTYPE_MEDIPACK" ? Math.fround(tagValue(task, "Factor of human max damage to add for each round") ?? ZOOM_TAG_DEFAULTS.medipackFactor) : null;
+    const tagString = (name: string): string | null => {
+      for (const child of task.children) if (child.type.startsWith("TagItem") && child.params["Name"] === name && typeof child.params["Value"] === "string") return child.params["Value"] as string;
+      return null;
+    };
+    const m203 =
+      taskType === "TASKTYPE_GUNM16A2"
+        ? {
+            muzzleKmh: Math.fround(tagValue(task, "M203 - Muzzle velocity (km/h)") ?? 270),
+            explosionRadiusM: Math.fround(tagValue(task, "M203 - Explosion radius (meters)") ?? 5),
+            activateRadius: Math.fround(tagValue(task, "M203 - Activate radius (meters)") ?? 1),
+            model: tagString("M203 - Model") ?? "108_05_1",
+          }
+        : null;
     out.set(scriptId, {
       scriptId,
       taskType,
+      m203,
+      missileModel: projectileType === "TASKTYPE_MISSILE" ? tagString("Missile - Model") : null,
       projectileType,
       grenade,
       medipackFactor,

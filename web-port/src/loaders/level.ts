@@ -12,6 +12,7 @@
  * Everything here is pure data handling and runs in Node (tests) and in the
  * browser. Sources and confidence of each interpretation: docs/formats.md.
  */
+import { SOLDIER_TYPE_DEFAULTS, isSoldierTaskType } from "./soldier-types";
 import type { DecodedTexture, IAssetSource, Vec3 } from "../contracts";
 import {
   IDENTITY3,
@@ -32,7 +33,7 @@ import { decodeTex } from "./loop-tex";
 import { readMef, type MefModel } from "./mef";
 import { readMtp } from "./mtp";
 import { decodeOlm } from "./olm";
-import { TERRAIN_GAME_MAX_LEVEL, TerrainOctree, type HeightMapTask } from "./terrain-octree";
+import { TERRAIN_GAME_MAX_LEVEL, TerrainOctree, type HeightMapTask, type TerrainMesh } from "./terrain-octree";
 import { TerrainLook, type TerrainMaterialLevel } from "./terrain-look";
 import { isQvmSymbol, readQvmCallTree, readQvmLiteralCalls, type QvmValue } from "./qvm";
 import { decodeHumanPlayerParams, type HumanPlayerParams } from "./gameplay-params";
@@ -42,7 +43,7 @@ import { flattenTasks, numberParam, readTaskTree, stringParam, vec3Param, type I
 import { wirePose } from "./wire";
 import { loadLevelVehicles, type LevelVehicles } from "./level-vehicles";
 import { railSplineFromTask, segmentDeformer, segmentModelRange, splineParamsFromTask, splineSegmentFrames } from "./spline-segment";
-import { placeTrain, readMefMagicVertices, trainCar, type RailSpline } from "./vehicles";
+import { attaMatrix, placeTrain, readMefMagicVertices, trainCar, type RailSpline } from "./vehicles";
 import { securityCameraLensMatrix, securityCameraLensPivot } from "./mission";
 
 // ---------------------------------------------------------------------------
@@ -371,6 +372,8 @@ export interface LevelBoneModel {
 
 export interface LevelSoldier {
   taskId: number;
+  /** objects.qvm type: HumanSoldier, HumanSoldierFemale or HumanSoldierRPG (soldier-types.ts); absent = HumanSoldier. */
+  taskType?: string;
   name: string;
   position: Vec3;
   yaw: number;
@@ -511,6 +514,8 @@ export interface IgiLevel {
   bounds: { min: Vec3; max: Vec3 };
   /** Physics types, magic objects and vehicle model data for the Heli / Car / Train tasks (docs/vehicles.md). */
   vehicles?: LevelVehicles;
+  /** combat: DefineMagicObj arguments of the TASKTYPE_AISTATIONARYGUN definitions, by model name (lower case). */
+  aiTurretDefs?: Map<string, unknown[]>;
   warnings: string[];
 }
 
@@ -572,13 +577,40 @@ const POSE_SPECS: Record<string, PoseSpec> = {
     model: (t) => stringParam(t, t.params["Initial on"] === true ? "On model" : "Off model"),
   },
   Fence: { position: "Position", gamma: "Gamma", model: MODEL("Model") },
+  // Full game (docs/objects.md): the elevator is placed here and moved to its spline pose by the
+  // engine; Generator / Radio / GenericTBA are ExplodeObjects; the Cabinet's Orientation is one
+  // yaw angle (Angle type, Rz [inferred]); a GenericPickup's Euler angles go straight into its
+  // render matrix (LAB_0046c2b0). PlaceExplosiveTBA has no model in the data.
+  Elevator: { position: "Position", orientation: "Orientation", model: MODEL("Model") },
+  Generator: { position: "Position", orientation: "Orientation", model: MODEL("Model") },
+  Radio: { position: "Position", orientation: "Orientation", model: MODEL("Model") },
+  Cabinet: { position: "Position", gamma: "Orientation", model: MODEL("Model") },
+  GenericPickup: { position: "Position", orientation: "Orientation", model: MODEL("Model") },
+  GenericTBA: { position: "Position", orientation: "Orientation", model: MODEL("Model") },
+  PlaceExplosiveTBA: { position: "Position", orientation: "Orientation", model: MODEL("Model") },
   SCamera: { position: "Holder Position", gamma: "Holder Gamma", model: MODEL("Holder Model") },
+  // World types of missions 3-14 (loaders/objects/*): the Siren is an ExplodeObject
+  // (FUN_00481c40 compile); the AlarmLight compile (FUN_0043a450, full exe) shows the "Off
+  // model" and makes its ATTA magic objects (the 344_02_1 reflector, placed as attachment
+  // "0"); the RotatingObject compile (FUN_004395d0) overwrites Orientation with the identity.
+  Siren: { position: "Position", orientation: "Orientation", model: MODEL("Model") },
+  AlarmLight: { position: "Position", orientation: "Orientation", model: MODEL("Off model") },
+  RotatingObject: { position: "Position", model: MODEL("Model") },
+  // combat: the stationary gun's tripod (it turns with the gun's yaw) and the turret holder (its ATTA is the turret).
+  StationaryGun: { position: "Position", orientation: "Orientation", model: MODEL("Holder model") },
+  AIStationaryGunHolder: { position: "Position", orientation: "Orientation", model: MODEL("Holder model") },
   // SplineObjWaypoint "Waypoint Model" is an editor gizmo: every SplineObj in
   // level 1 has "Display waypoints" = FALSE. Segment models: see buildSplines.
 };
 
 /** Magic-object types that are invisible helpers, not rendered geometry. */
 const HIDDEN_MAGIC = new Set(["TASKTYPE_DEATHZONE", "TASKTYPE_GUNFLAME", "TASKTYPE_SCAMERALENSVIEWCONE"]);
+/** turrets: the rocket the Mil's RocketPods fire (string 0x53bb60, FUN_00427a70, full exe). */
+export const ROCKET_POD_MISSILE_MODEL = "700_10_1";
+
+// Plane afterburners (vehicles): the Afterburner draw (slot 4, FUN_0042bd40, full exe) only queues an
+// "AfterburnerPrimitive" whose draw FUN_0042c4b0 calls FUN_004c1780, a bare `ret`: never drawn [recovered].
+HIDDEN_MAGIC.add("TASKTYPE_AFTERBURNER");
 
 /** First-person arms model and skeleton (FUN_004632d0) and the player's body skeleton [recovered, docs/characters.md]. */
 const FIRST_PERSON_ARMS_MODEL = "005_01_1";
@@ -656,10 +688,17 @@ export async function loadIgiLevel(raw: IAssetSource, paths: IgiLevelPaths = LEV
 
   // --- Magic objects -------------------------------------------------------
   const magic = new Map<string, string>();
+  /** combat: TASKTYPE_AISTATIONARYGUN definitions -> their gun model (DefineMagicObj argument 3, FUN_0046fa50). */
+  const turretGunModels = new Map<string, string>();
+  const aiTurretDefs = new Map<string, unknown[]>();
   for (const call of readQvmCallTree(await raw.readBinary(paths.magicObjects))) {
     if (call.fn !== "DefineMagicObj") continue;
     const [name, , type] = call.args;
     if (typeof name === "string" && isQvmSymbol(type as QvmValue)) magic.set(name, (type as { symbol: string }).symbol);
+    if (typeof name === "string" && magic.get(name) === "TASKTYPE_AISTATIONARYGUN" && typeof call.args[3] === "string") {
+      turretGunModels.set(name, call.args[3]);
+      aiTurretDefs.set(name.toLowerCase(), [...call.args]);
+    }
   }
 
   // --- Origin: player x/y, base ground z -----------------------------------
@@ -798,8 +837,9 @@ export async function loadIgiLevel(raw: IAssetSource, paths: IgiLevelPaths = LEV
         warnings.push(`attachment ${attachment.name} of ${model} is not in any archive`);
         continue;
       }
-      // ATTA matrices are applied as row vectors (v * M) => column form is M^T.
-      const local = transposeMat3(attachment.matrix as Mat3);
+      // ATTA matrices are applied as row vectors (v * M) => column form is M^T, re-orthonormalised
+      // by the child create FUN_004c4950 (full exe): mirroring records become rotations (vehicles.ts attaMatrix).
+      const local = attaMatrix(attachment.matrix);
       const offset = mulMat3Vec(rotation, attachment.position);
       place(
         task,
@@ -895,12 +935,15 @@ export async function loadIgiLevel(raw: IAssetSource, paths: IgiLevelPaths = LEV
   // --- Vehicles (docs/vehicles.md) -------------------------------------------
   // Their placements are not mission points: helicopters and trains run far
   // outside the base and must not widen the terrain detail region.
-  const vehicles = await loadLevelVehicles(raw, tasks, (name) => modelPayloads.get(name)?.buffer ?? null, paths.magicObjects, warnings);
+  const vehicles = await loadLevelVehicles(raw, tasks, (name) => modelPayloads.get(name)?.buffer ?? null, paths.magicObjects, warnings,
+    paths.missionAiScripts.replace(/ai\/?$/, "graphs/"));
   // Helicopters: compile FUN_00431bd0 poses the model at "Position" /
   // "Orientation"; the model's ATTA rotors and HeliWheel skids become attached
   // children (they move with the heli; rotor spin: engine/world/vehicles.ts).
+  // Planes the same (compile FUN_00434770, full exe): gear, hatch, canopy and rudders are
+  // ATTA children animated by engine/world/vehicles.ts (loaders/plane.ts).
   for (const [ti, task] of tasks.entries()) {
-    if (task.type !== "Heli") continue;
+    if (task.type !== "Heli" && task.type !== "Plane") continue;
     const model = stringParam(task, "Model");
     const position = vec3Param(task, "Position");
     if (!model || !position) continue;
@@ -1146,7 +1189,9 @@ export async function loadIgiLevel(raw: IAssetSource, paths: IgiLevelPaths = LEV
   // --- Soldiers -------------------------------------------------------------
   const soldiers: LevelSoldier[] = [];
   const taskIndexOf = new Map<IgiTask, number>(tasks.map((t, i) => [t, i]));
-  for (const task of ofType("HumanSoldier")) {
+  // combat: every soldier class (HumanSoldier, HumanSoldierFemale, HumanSoldierRPG; soldier-types.ts), in task order.
+  for (const task of tasks.filter((t) => isSoldierTaskType(t.type))) {
+    const defaults = SOLDIER_TYPE_DEFAULTS[task.type] ?? SOLDIER_TYPE_DEFAULTS.HumanSoldier;
     const position = vec3Param(task, "Position");
     if (!position) continue;
     const ai = task.children.find((c) => c.type === "HumanAI");
@@ -1159,6 +1204,7 @@ export async function loadIgiLevel(raw: IAssetSource, paths: IgiLevelPaths = LEV
     missionPoints.push(position);
     soldiers.push({
       taskId: task.id,
+      taskType: task.type,
       name: task.name,
       position: igiPointToEngine(position, origin),
       yaw: numberParam(task, "Gamma") ?? 0,
@@ -1168,8 +1214,8 @@ export async function loadIgiLevel(raw: IAssetSource, paths: IgiLevelPaths = LEV
       weapon: gunId ?? null,
       view: await viewFor(aiType, ai ? ai.id : null),
       combat: (aiType && combatByType.get(aiType)) || null,
-      skeleton: numberParam(task, "Bone Heirachy") ?? 1,
-      standAnimation: numberParam(task, "Stand Animation") ?? -1,
+      skeleton: numberParam(task, "Bone Heirachy") ?? defaults.skeleton,
+      standAnimation: numberParam(task, "Stand Animation") ?? defaults.standAnimation,
       aiTaskId: ai ? ai.id : null,
       graphId: ai ? numberParam(ai, "Graph ID") : null,
       taskIndex: taskIndexOf.get(task) ?? -1,
@@ -1201,25 +1247,38 @@ export async function loadIgiLevel(raw: IAssetSource, paths: IgiLevelPaths = LEV
       heightMaps.push({ position, level: heightLevel, size, bitmapId });
     }
   }
-  const octree = new TerrainOctree(
-    await raw.readBinary(paths.terrain.ctr),
-    await raw.readBinary(paths.terrain.cmd),
-    await raw.readBinary(paths.terrain.hmp),
-    heightMaps,
-  );
+  // terrain.hmp holds the HeightMap tasks' relief grids; a mission without HeightMap tasks has no
+  // such file (level 2, 4, 5, 7, 11-14 of the full game).
+  let hmp: ArrayBuffer | undefined;
+  if (heightMaps.length) {
+    try {
+      hmp = await raw.readBinary(paths.terrain.hmp);
+    } catch (error) {
+      warnings.push(`terrain: ${heightMaps.length} HeightMap tasks but ${paths.terrain.hmp} is not readable (${(error as Error).message}); no relief`);
+    }
+  }
+  const octree = new TerrainOctree(await raw.readBinary(paths.terrain.ctr), await raw.readBinary(paths.terrain.cmd), hmp, heightMaps);
+  if (octree.invalidSlots) warnings.push(`terrain: ${octree.invalidSlots} octree child slots point outside terrain.ctr (dropped)`);
+  // DiscardTerrain (full game: basements and lift shafts below grade; schema Position, Level = 10).
+  for (const task of ofType("DiscardTerrain")) {
+    const position = vec3Param(task, "Position");
+    if (position) octree.addDiscard(position, numberParam(task, "Level") ?? 10);
+  }
   // Collision: full detail over the mission area padded by 256 m, snapped to
   // the level-16 cell grid (2^15 units). Rendering picks its own cells per
   // frame (TerrainOctree.selectCells).
   const pad = 2 ** 20;
   const snap = 2 ** 15;
-  const xs = missionPoints.map((p) => p[0]);
-  const ys = missionPoints.map((p) => p[1]);
-  const bbox: [number, number, number, number] = [
-    Math.floor((Math.min(...xs) - pad) / snap) * snap,
-    Math.floor((Math.min(...ys) - pad) / snap) * snap,
-    Math.ceil((Math.max(...xs) + pad) / snap) * snap,
-    Math.ceil((Math.max(...ys) + pad) / snap) * snap,
-  ];
+  // Each mission point gets its padded square; overlapping squares merge into one box. One box
+  // over everything would be 28 x 14 km of full detail in mission 4 (GOD), whose planes start 30 km
+  // from the player; the other missions' areas come out as before (one box).
+  const boxes: Array<[number, number, number, number]> = missionPoints.map((q) => [
+    Math.floor((q[0] - pad) / snap) * snap,
+    Math.floor((q[1] - pad) / snap) * snap,
+    Math.ceil((q[0] + pad) / snap) * snap,
+    Math.ceil((q[1] + pad) / snap) * snap,
+  ]);
+  const terrainBoxes = mergeBoxes(boxes);
   const toEngineMesh = (mesh: { positions: Float64Array; indices: Uint32Array }): LevelTerrainMesh => {
     const positions = new Float32Array(mesh.positions.length);
     for (let i = 0; i < mesh.positions.length; i += 3) {
@@ -1278,7 +1337,7 @@ export async function loadIgiLevel(raw: IAssetSource, paths: IgiLevelPaths = LEV
     await raw.readBinary(paths.terrain.lmp),
   );
   const terrain: LevelTerrain = {
-    detail: toEngineMesh(octree.mesh(bbox, TERRAIN_GAME_MAX_LEVEL)),
+    detail: toEngineMesh(joinMeshes(terrainBoxes.map((b) => octree.mesh(b, TERRAIN_GAME_MAX_LEVEL)))),
     sun: rgb(sun, "Front Color", [1, 0.77, 0.62]),
     ambient: rgb(light, "Ambient color terrain", [0.27, 0.29, 0.33]),
     octree,
@@ -1441,6 +1500,11 @@ export async function loadIgiLevel(raw: IAssetSource, paths: IgiLevelPaths = LEV
   const carriedWeapons = new Set<string>([...weapons, ...soldiers.map((s) => s.weapon).filter((w): w is string => w !== null)]);
   // GunPickup weapons too: the pickup draws the Gun Model (render/pickups.ts) and the player can then carry it.
   for (const t of ofType("GunPickup")) carriedWeapons.add(stringParam(t, "ID") ?? "");
+  // combat: the StationaryGun's weapon ("Weapon ID", default WEAPON_ID_M2HB) and the turrets' (the weaponconfig whose
+  // "Gun Model" is the turret definition's gun model, FUN_00413c00): their gun models, flames and fire sounds.
+  for (const t of ofType("StationaryGun")) carriedWeapons.add(stringParam(t, "Weapon ID") || "WEAPON_ID_M2HB");
+  const placedTurretGuns = new Set(instances.filter((i) => i.magicType === "TASKTYPE_AISTATIONARYGUN").map((i) => turretGunModels.get(i.model) ?? ""));
+  for (const w of weaponTable.values()) if (w.gunModel && placedTurretGuns.has(w.gunModel)) carriedWeapons.add(w.scriptId);
   // AmmoPickup models: DefineAmmoType arg 13 (FUN_0046c350).
   const ammoTypes = await loadAmmoTypes(raw, warnings);
   for (const t of ofType("AmmoPickup")) {
@@ -1477,6 +1541,35 @@ export async function loadIgiLevel(raw: IAssetSource, paths: IgiLevelPaths = LEV
     };
     collect(gun, [0, 0, 0], IDENTITY3, 0, "body");
     guns.set(id, parts);
+  }
+
+  // combat: models drawn at run time outside the placed instances (render/combat-models.ts): the weaponconfig
+  // projectile tags ("M203 - Model" 108_05_1, "Missile - Model" 110_02_1) of the weapons in the level.
+  for (const task of weaponTasks) {
+    if (task.type !== "WeaponConfig" || !carriedWeapons.has(stringParam(task, "Script ID") ?? "")) continue;
+    for (const c of task.children) {
+      const name = c.params["Name"];
+      const value = c.params["Value"];
+      if (c.type.startsWith("TagItem") && typeof name === "string" && / - Model$/i.test(name) && typeof value === "string" && modelPayloads.has(value) && mef(value)) addModel(value);
+    }
+  }
+
+  // turrets (combat/vehicle-weapons.ts, combat/missile.ts): the Mil rocket pods' HIND rocket (700_10_1,
+  // hard-wired in the RocketPod update FUN_00427a70, full exe) is drawn; the run-time models' magic
+  // vertices (the vehicle turrets' gun models: muzzle = vertex 2; the missiles: contact point = vertex 0,
+  // smoke at vertex 1) join the vehicle model data.
+  if (instances.some((i) => i.magicType === "TASKTYPE_ROCKETPOD") && modelPayloads.has(ROCKET_POD_MISSILE_MODEL) && mef(ROCKET_POD_MISSILE_MODEL)) addModel(ROCKET_POD_MISSILE_MODEL);
+  for (const name of [...placedTurretGuns, ...models.keys()]) {
+    if (!name || vehicles.models.has(name)) continue;
+    const isMissile = vehicles.types.some((t) => t.taskType === "TASKTYPE_MISSILE" && t.model.toLowerCase() === name.toLowerCase());
+    if (!placedTurretGuns.has(name) && !isMissile) continue;
+    const buffer = modelPayloads.get(name)?.buffer;
+    if (!buffer) continue;
+    try {
+      vehicles.models.set(name, { magicVertices: readMefMagicVertices(buffer), attachments: readMef(buffer).attachments });
+    } catch (error) {
+      warnings.push(`turret / missile model ${name}: ${(error as Error).message}`);
+    }
   }
 
   // --- Skinned models and animations (soldiers, first-person arms) ---------
@@ -1577,6 +1670,7 @@ export async function loadIgiLevel(raw: IAssetSource, paths: IgiLevelPaths = LEV
     sounds,
     bounds: { min, max },
     vehicles,
+    aiTurretDefs,
     warnings,
   };
 }
@@ -1731,4 +1825,46 @@ export function decodeLevelTexture(level: IgiLevel, key: string): DecodedTexture
   const payload = level.textures.get(key);
   if (!payload) throw new Error(`level: unknown texture ${key}`);
   return decodeTex(payload);
+}
+
+/** Merge axis-aligned boxes [x0, y0, x1, y1] until none overlap or touch (each result is a bounding box). */
+export function mergeBoxes(input: ReadonlyArray<readonly [number, number, number, number]>): Array<[number, number, number, number]> {
+  let boxes = input.map((b) => [b[0], b[1], b[2], b[3]] as [number, number, number, number]);
+  for (let merged = true; merged; ) {
+    merged = false;
+    const out: Array<[number, number, number, number]> = [];
+    for (const b of boxes) {
+      const hit = out.find((o) => b[0] <= o[2] && o[0] <= b[2] && b[1] <= o[3] && o[1] <= b[3]);
+      if (hit) {
+        hit[0] = Math.min(hit[0], b[0]);
+        hit[1] = Math.min(hit[1], b[1]);
+        hit[2] = Math.max(hit[2], b[2]);
+        hit[3] = Math.max(hit[3], b[3]);
+        merged = true;
+      } else out.push(b);
+    }
+    boxes = out;
+  }
+  return boxes;
+}
+
+/** Concatenate terrain meshes (disjoint regions: no shared vertices to weld). */
+function joinMeshes(meshes: readonly TerrainMesh[]): TerrainMesh {
+  if (meshes.length === 1) return meshes[0];
+  const vertexCount = meshes.reduce((n, m) => n + m.positions.length, 0);
+  const indexCount = meshes.reduce((n, m) => n + m.indices.length, 0);
+  const positions = new Float64Array(vertexCount);
+  const indices = new Uint32Array(indexCount);
+  let pv = 0;
+  let pi = 0;
+  let cells = 0;
+  for (const m of meshes) {
+    positions.set(m.positions, pv);
+    const base = pv / 3;
+    for (let i = 0; i < m.indices.length; i++) indices[pi + i] = m.indices[i] + base;
+    pv += m.positions.length;
+    pi += m.indices.length;
+    cells += m.cells;
+  }
+  return { positions, indices, cells };
 }

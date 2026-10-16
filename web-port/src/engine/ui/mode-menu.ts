@@ -5,19 +5,24 @@
  * Quit dialog 934 (same window, title frame and font): "Story Mode",
  * "Free Mode" and "Cancel". Both modes continue to the original Select
  * Mission screen 914; Game_SetPlayMode tells the port which missions it
- * lists (story: up to the profile's progress, as igi.exe; free: every
- * installed mission) and whether finishing one moves the story on.
+ * lists (story: the installed missions up to the profile's progress, as
+ * igi.exe; free: every mission the game names, missions.res 1..14, with its
+ * picture and description) and whether finishing one moves the story on.
+ * Select Mission's OK / double click start only an installed mission
+ * (Game_IsMissionInstalled); another opens dialog 937 "Mission Not Installed".
  */
 import type { IgiTask } from "../../loaders";
 
 /** Dialog id (the shipped scripts use 930-935). */
 export const MODE_DIALOG_ID = 936;
+/** "Mission Not Installed" (Free Mode lists every mission the game names). */
+export const NOT_INSTALLED_DIALOG_ID = 937;
 export const PLAY_MODE = { story: 0, free: 1 } as const;
 export type PlayMode = "story" | "free";
 
 /** Text keys the port adds (menusystem.res has none of them). */
 export const MODE_MENU_TEXT: ReadonlyMap<string, string> = new Map(
-  ["Select Mode", "Story Mode", "Free Mode", "Cancel"].map((k) => [k.toLowerCase(), k]),
+  ["Select Mode", "Story Mode", "Free Mode", "Cancel", "Mission Not Installed", "Its files are not part of", "this installation."].map((k) => [k.toLowerCase(), k]),
 );
 
 const task = (type: string, params: IgiTask["params"], children: IgiTask[] = [], id = -1): IgiTask => ({ id, type, name: "", params, children });
@@ -49,6 +54,23 @@ function modeDialog(): IgiTask {
   ], MODE_DIALOG_ID);
 }
 
+/** Dialog 937 at the Quit dialog's place and size: title, two lines in font4, OK. */
+function notInstalledDialog(): IgiTask {
+  const line = (key: string): IgiTask =>
+    task("MenuText", { "Text Resource": key, "Font Resource": "font4.fnt", ColourIndex: 1, "On Click Script": "", "Click Sound Resource": "" });
+  return task("DialogWindow", { "X-Pos": 197, "Y-Pos": 234, Width: 256, Height: 133, SwapKeys: false }, [
+    frame(197, 234, 256, 21, 2, [text("Mission Not Installed", 1)]),
+    frame(197, 258, 256, 50, 1, [line("Its files are not part of"), line("this installation.")]),
+    frame(197, 316, 256, 40, 1, [text("OK", 2, "MenuManager_DeactivatePopuScreen()", "menu_ok")]),
+  ], NOT_INSTALLED_DIALOG_ID);
+}
+
+/** `script` (a Select Mission start) only for an installed mission; else the Not Installed dialog. */
+const guardStart = (script: string, id: string): string =>
+  script.includes("Game_IsMissionInstalled")
+    ? script
+    : `Game_IsMissionInstalled(${id}) ? (${script.trim()}) : MenuManager_ActivatePopupScreen(${NOT_INSTALLED_DIALOG_ID})`;
+
 const walk = (t: IgiTask, f: (t: IgiTask) => void): void => {
   f(t);
   for (const c of t.children) walk(c, f);
@@ -78,6 +100,18 @@ export function injectModeDialog(tree: IgiTask[]): boolean {
   });
   if (!entry || !siblings) return false;
   (entry as IgiTask).params["On Click Script"] = `MenuManager_ActivatePopupScreen(${MODE_DIALOG_ID})`;
-  if (!exists) (siblings as IgiTask[]).push(modeDialog());
+  if (!exists) (siblings as IgiTask[]).push(modeDialog(), notInstalledDialog());
+  // Select Mission (914): OK and a double click on the list start the mission only when it is installed.
+  for (const root of tree) walk(root, (t) => {
+    if (t.type !== "MenuScreen" || t.id !== 914) return;
+    walk(t, (c) => {
+      if (c.type === "ScrollListBox" && c.id === 964 && typeof c.params["On Select Item"] === "string" && /MENUMANAGER_STARTGAME/.test(c.params["On Select Item"] as string)) {
+        c.params["On Select Item"] = guardStart(c.params["On Select Item"] as string, "this.nActiveID");
+      }
+      if (c.type === "MenuText" && c.params["Text Resource"] === "OK" && /MENUMANAGER_STARTGAME/.test(String(c.params["On Click Script"] ?? ""))) {
+        c.params["On Click Script"] = guardStart(c.params["On Click Script"] as string, "ScrollListBox_964.nActiveID");
+      }
+    });
+  });
   return true;
 }

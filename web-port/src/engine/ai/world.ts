@@ -49,6 +49,8 @@ export interface AiHooks {
   doorOpen?(ai: HumanAi, point: RV3): boolean;
   /** The door leg was completed: forget its door (the next door leg searches again). */
   doorLegDone?(ai: HumanAi): void;
+  /** combat: the StationaryGun task `id` (FUN_004f1030) as the GUNNER sees it, null when no such gun exists. */
+  stationaryGun?(id: number): import("./gunner").AiStationaryGun | null;
   log?(message: string): void;
 }
 

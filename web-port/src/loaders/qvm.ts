@@ -29,9 +29,22 @@
  * Grammar recovered from the bytecode:
  *   statement := PUSHI fn; CALL offsets; BRA end; arg*; end: POP
  *   nested    := PUSHI fn; CALL offsets; BRA end; arg*; end: BRK
- *   arg       := (literal [MINUS] | nested) BRK
+ *   arg       := (literal [MINUS] | nested | constexpr) BRK
+ *   constexpr := postfix numeric literals with 19 ADD, 1a SUB, 1b MUL,
+ *                1c DIV, 2b PLUS, 2c MINUS (no symbols, no calls)
  * CALL's offset table must exactly partition the region skipped by BRA.
+ *
+ * Constant expressions [observed: the three physicsobj/planes/*\/plane.qvm
+ * scripts, e.g. `PUSHW 15000; PUSHF 1.5; MUL` for the SU-27 speed
+ * normaliser 22500 and `PUSHF 0.027; PUSHB 2; MUL` for its thrust step]
+ * are folded with the VM's binary-operator semantics (qvm-vm.ts,
+ * FUN_004b3e50 [recovered]): int op int stays int (32-bit wrap), any float
+ * operand makes the operation a float32 one (fld / f<op> / fstp DWORD in
+ * chop mode); unary minus / plus as FUN_004b48b0. Opcode numbers come from
+ * the exe's mnemonic table (qvm-vm.ts QVM_OPCODES). Every other opcode in
+ * an argument still throws.
  */
+import { x87F32Add, x87F32Div, x87F32Mul, x87F32Sub, x87StoreF32 } from "./x87";
 
 export type QvmValue = number | string | boolean | QvmSymbol | QvmCall;
 
@@ -61,6 +74,11 @@ const OP = {
   POP: 0x12,
   BRA: 0x14,
   CALL: 0x18,
+  ADD: 0x19,
+  SUB: 0x1a,
+  MUL: 0x1b,
+  DIV: 0x1c,
+  PLUS: 0x2b,
   MINUS: 0x2c,
 } as const;
 
@@ -148,6 +166,11 @@ function createDecoder({ symbols, literals, code }: QvmFile): (at: number) => In
       case OP.BRK:
       case OP.POP:
       case OP.MINUS:
+      case OP.PLUS:
+      case OP.ADD:
+      case OP.SUB:
+      case OP.MUL:
+      case OP.DIV:
         return { op, size: 1 };
       case OP.PUSH_0:
         return { op, size: 1, value: 0 };
@@ -258,6 +281,7 @@ export function readQvmCallTree(buffer: ArrayBuffer): QvmCall[] {
       op = decode(at);
     }
     if (op.op !== OP.BRK || at + 1 !== end) {
+      if (!first.isSymbol && typeof first.value === "number") return foldConstant(start, end);
       fail(`unsupported argument expression at code 0x${start.toString(16)}`);
     }
     if (first.isSymbol) {
@@ -270,6 +294,48 @@ export function readQvmCallTree(buffer: ArrayBuffer): QvmCall[] {
     }
     if (typeof first.value === "number") return negate ? -first.value : first.value;
     return first.value;
+  };
+
+  /**
+   * A numeric constant expression argument (postfix, see the header): every
+   * instruction up to the block's BRK must be a numeric literal push or one
+   * of ADD / SUB / MUL / DIV / PLUS / MINUS, leaving exactly one value.
+   */
+  const foldConstant = (start: number, end: number): number => {
+    const stack: Array<{ int: boolean; value: number }> = [];
+    let at = start;
+    while (at < end) {
+      const ins = decode(at);
+      if (ins.op === OP.BRK) break;
+      if (typeof ins.value === "number" && !ins.isSymbol) {
+        stack.push({ int: ins.op !== OP.PUSHF, value: ins.value });
+      } else if (ins.op === OP.MINUS || ins.op === OP.PLUS) {
+        const v = stack.pop() ?? fail(`unary operator without operand at code 0x${at.toString(16)}`);
+        if (ins.op === OP.MINUS) stack.push({ int: v.int, value: v.int ? -v.value | 0 : -v.value });
+        else stack.push(v);
+      } else if (ins.op === OP.ADD || ins.op === OP.SUB || ins.op === OP.MUL || ins.op === OP.DIV) {
+        const b = stack.pop();
+        const a = stack.pop();
+        if (!a || !b) fail(`binary operator without operands at code 0x${at.toString(16)}`);
+        if (a.int && b.int) {
+          if (ins.op === OP.DIV && b.value === 0) fail(`integer division by zero at code 0x${at.toString(16)}`);
+          const r = ins.op === OP.ADD ? (a.value + b.value) | 0 : ins.op === OP.SUB ? (a.value - b.value) | 0
+            : ins.op === OP.MUL ? Math.imul(a.value, b.value) : Math.trunc(a.value / b.value) | 0;
+          stack.push({ int: true, value: r });
+        } else {
+          // Operands popped as float32 (an int via fild + fstp DWORD), one float32 operation.
+          const x = x87StoreF32(a.value);
+          const y = x87StoreF32(b.value);
+          const r = ins.op === OP.ADD ? x87F32Add(x, y) : ins.op === OP.SUB ? x87F32Sub(x, y) : ins.op === OP.MUL ? x87F32Mul(x, y) : x87F32Div(x, y);
+          stack.push({ int: false, value: r });
+        }
+      } else {
+        fail(`unsupported argument expression at code 0x${start.toString(16)}`);
+      }
+      at += ins.size;
+    }
+    if (at + 1 !== end || stack.length !== 1) fail(`unsupported argument expression at code 0x${start.toString(16)}`);
+    return stack[0].value;
   };
 
   const statements: QvmCall[] = [];

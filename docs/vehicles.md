@@ -541,3 +541,520 @@ train compile poses = `placeTrain`; heli 1502 and truck 1099 through
 and collision bodies follow `placeTrain` at the runtime's distance; rotor
 copy counts and spin step; wheel pose; doors with id −1 have their own
 bodies.
+
+---
+
+## Full game: missions 2–14 (full exe)
+
+
+To be merged into `docs/vehicles.md` (new sections after §12) and the evidence
+ledger. All addresses are **full-exe** `FUN_` names (image base 0x400000).
+Labels: **[recovered]** read from igi.exe, **[observed]** measured on the shipped
+full-game files, **[inferred]** reasoning only.
+
+Implementation: `web-port/src/loaders/plane.ts` (PlaneSim), `src/loaders/car-ai.ts`
+(CarAi, VehicleDetector), `src/loaders/vehicles.ts` (attaMatrix, autoOrientMatrix,
+RailSpline Position / Automatic Orientation, plane types), `src/loaders/qvm.ts`
+(constant-expression arguments), `src/engine/world/vehicles.ts` (planes, CarAI,
+car update / explosion / wreck, heli door, sounds, CRITERIA_VEHICLE),
+`src/engine/mission/mission-system.ts` (hooks), `src/engine/game.ts` (vehicle sounds).
+Tests: `tests/full-vehicles.test.ts` (20), `tests/vehicles.test.ts` (type count).
+
+### 1. QVM reader: constant-expression arguments [observed + recovered]
+
+The three `physicsobj/planes/*/plane.qvm` scripts failed in the call-tree reader
+because some `DefinePhysicsObjType` arguments are postfix constant expressions:
+`PUSHW 15000; PUSHF 1.5; MUL` (cfg[7] = 22500), `PUSHF 0.027; PUSHB 2; MUL`
+(cfg[8] = 0.054), `PUSHF 0.003; PUSHB 2; MUL` (cfg[9] = 0.006) [observed: opcode
+0x1b at code 0x173 in SU27/CutSceneMissile, 0x2c2 in JSF]. `readQvmCallTree` now
+folds arguments made only of numeric pushes and ADD 0x19 / SUB 0x1a / MUL 0x1b /
+DIV 0x1c / PLUS 0x2b / MINUS 0x2c with the VM's semantics (FUN_004b3e50 [recovered,
+qvm-vm.ts]: int op int stays int, any float operand gives one float32 operation).
+Any other opcode still throws. Result: 37 physics types (was 34); every other
+script parses as before.
+
+Plane types [observed, decoded]: SU27 702_02_1 and CutSceneMissile 714_01_1:
+mass 10000, box 5 × 16 × 2.5 m, no contact points, rest 0.7 / 0.001, cfg = 700,
+1.7, 0.9, 0.9, 0.9, 40, 0.9, 22500, 0.054, 0.006; drag (coef, point m, unit
+normal): (6, 0, x), (2, 0, y), (60, (0, 8, 0), (0, −0.0871, 0.9962)), (0), (0),
+(10, (0, −8, 0), x); JSF 701_01_1 the same with 8 contact points.
+
+### 2. ATTA child matrices are re-orthonormalised (FUN_004c4950) [recovered]
+
+The create of every ATTA child (FUN_004c4950, called through FUN_004f4800 by the
+vehicle compiles) does not use the stored 3×3 directly: with a = column 0 and
+b = column 1 of the stored (row-vector) matrix and c = a × b, the child's matrix
+(column form, world = P M) has rows (unit a, unit(c × a), unit(unit a × (c × a))).
+For a proper rotation this is the transpose the loader already used. A mirroring
+record becomes the proper rotation keeping a and b: diag(−1, 1, 1) →
+diag(−1, 1, −1) = Ry(π). Only 8 of the 2,120 ATTA records of the full game
+mirror [observed]: the SU-27's left main gear 702_15_1 and left taileron
+702_14_1, and six parts of 617_01_1; none in the one-mission build.
+702_15_1's mesh is 702_12_1 (the right main gear) with z negated [observed: all
+130 vertices], so with the stored mirror its wheel would point up through the
+wing and its ground ray would never reach the ground (the plane rolls ~60° onto
+its left wing); with the recovered rotation it is the mirrored right gear, wheel
+down. `vehicles.ts attaMatrix` is used by `level.ts place()` (all attachments),
+the engine's attachment chains, car wheels and the plane parts.
+
+### 3. Plane [recovered unless marked]
+
+Class `Plane` (FUN_004330f0): create FUN_00433410 (Original Thrust 1, Canopy 0,
+Gear 1, sound block FUN_004e6ab0(2)), update FUN_00433690, compile FUN_00434770,
+AnimTask input FUN_004337e0, physics FUN_00433b50, gear contact FUN_00434310,
+reset FUN_00433530 / FUN_00433580. No damage handler, no members.
+
+- **Compile**: model, body FUN_004fb700, reset (canopy / gear / hatch / gear-anim
+  flags from "Canopy" / "Gear"; Break, Catapult, Force Z 0), then the ATTA children
+  are created (FUN_004f4820 / FUN_004f4800) and read those flags; target = thrust
+  = Original Thrust; v = "Speed" or Original Thrust × cfg[0] × 30.340740
+  (0x533778) along local +y (the compile uses the matrix before "Orientation" is
+  copied; the AnimTask's nTick 0 redoes it with the right one).
+- **Input** (every AnimTask step): ch0..2 → inputs; ch3 ≠ −1 → target; ch5 / ch6 /
+  ch9 ≠ −1 → canopy / gear / Force Z ^= (char)fistp(ch) (chop mode: truncation);
+  Break = ch7 ≠ −1; Catapult = ch8 ≠ −1; nothing written back. nTick 0: pose,
+  body, thrust = target = Original Thrust, inputs / controls 0, children
+  re-created with the current flags, reset, v0. nTick > 0: physics.
+- **Reset FUN_00433580**: copies the type's drag elements, rebuilds elements 3 / 4
+  (the tailerons): coef = wing coef × 0.5 (0x533504), normal = wing normal,
+  point = (±16384, −wing.y, wing.z), and writes them back into the type
+  (+0x80 / +0x9c of the config, read by the per-tick code).
+- **Physics FUN_00433b50**, m = mass, g = 44.600887: f = clamp(speed /
+  (cfg[7] × 37.925926), 0, 1); thrust step cfg[8] (thrust ≥ 0.8) / cfg[9];
+  target − 0.6 (0x53369c) with ground contacts and target < 1; move without
+  overshoot; thrust < 0.001 → 0 (always); c_k = (s_k c_k + (1 − s_k) in_k) ×
+  (0.995 − 0.00083 f) with s = cfg[2], [4], [6]; tailerons (any c ≠ 0 and
+  (contacts 0 or speed ≥ 10)): P = c0 cfg[1] π/360, R = c1 cfg[3] π/360, θ3 =
+  min(−(R + P), cfg[1]), θ4 = min(R − P, cfg[1]), n3 / n4 = Rx(θ) × the type's
+  taileron normals; Break: forward ×3, tailerons wing × 0.375, wing × 0.75;
+  Catapult: (0, m × 6489.43, 0) at the origin; thrust ≠ 0: (0, m thrust g, 0),
+  turned by Rz(cfg[5] c2 π/360) without contacts, at (0, 10 m, 0); gear contact;
+  not at rest → drag (contacts 0 or speed > 30 km/h) and step(g, 1.0, 0.92);
+  sound block = (thrust, thrust > 0.01).
+- **Contacts** (+0x1b8) are counted only by the generic body-point collision per
+  contact point (0x4fbbe0 / 0x4fbe27 / 0x4fc79e); the SU-27 and the missile have
+  none, so for every shipped plane contacts = 0 (no ground target drop, thrust
+  yaw and drag always on, never at rest).
+- **Gear contact FUN_00434310**, per Gear child (≤ 4): ray from the gear's magic
+  vertex 0 in the world (its current pose, retract angle included) + 2 m down to
+  it; the force point is the ATTA offset + the raw vertex (M^T M v); hit d ≤ 2 m:
+  d ≥ 1.85 m spring (2 m − d) / 614.4 × 0.4 m g, else ((1.85 m − d) / 1.85 m + 1)
+  × 0.4 m g and the plane is lifted by the deepest penetration (any stiff hit);
+  per contacting gear v.x, v.y × thrust × 0.8, L × 0.98. Consequence [observed in
+  the port]: on the ground a plane only rolls with thrust ≥ 1.25 (1.25 × 0.8 = 1):
+  mission 3 plane 601 (thrust 1.25) rolls, lifts off along the runway and climbs
+  away; plane 600 (thrust ≤ 1) crawls out of the hangar at ~2 km/h.
+- **Sub-parts** (0x140-byte magic objects; world = M_plane L_atta R):
+  Gear (create FUN_00435460: 0 with the gear down, else param0 deg; update
+  FUN_00435930; place FUN_00435a80 → FUN_004355a0: R = Rz(steer) Rx(a), steer =
+  c2 π/4 for a steerable gear while down); Hatch (create FUN_00435c50, update
+  FUN_00435e50); CockpitShield (create FUN_00434e10: canopy open → param deg;
+  update FUN_004352a0); Rudder (FUN_004362c0; RUDDER_AILERON 0 / TAILERON_LEFT 1 /
+  TAILERON_RIGHT 2 / GAMMA 3 registered by FUN_004361d0, now mapped by
+  readMagicObjects). The angle updates run once per physics tick in the port
+  [inferred: the caller of slot 1 was not traced; ATTA order kept].
+- **Afterburner is never drawn**: the class's draw (slot 4, FUN_0042bd40) only
+  queues an "AfterburnerPrimitive" whose draw FUN_0042c4b0 calls FUN_004c1780, a
+  bare `ret` [recovered]. TASKTYPE_AFTERBURNER is hidden (level.ts HIDDEN_MAGIC).
+- **Sound**: FUN_00433690: "Play sound" evaluating to 0 stops, else group "su27"
+  (0x53bfcc) once; vars (thrust, playing).
+
+### 4. CarAI [recovered]
+
+Class FUN_00425c80; update FUN_00425de0, compile FUN_004265a0 (car / AIGraph by
+id; reset input nTick 0 with brake 0 → ch3 −1). Implemented literally:
+cursor = the HumanAI patrol cursor (FUN_004537e0 / FUN_00453760 =
+AiPatrolCursor); WALKTO / RUNTO: arrived within 3 m (FUN_004260c0) → advance,
+else next hop FUN_00425c10 (nearest node FUN_005096f0 → route FUN_005096c0;
+no link: error, nearest node), S = SETSPEED value, drive FUN_00426140; DELAY n
+(n + 2 ticks, brake request); END / QUIT: parked, brake 1, steer 0, desired 0,
+thrust output kept; SETSPEED: value, brake request 0; outputs of the branches
+that do not recompute are re-sent. Desired speed FUN_004255a0 (constants 0x533600
+.. 0x533670, π stored as 3.1415926535897944), FUN_00425b80 (hop adjust),
+thrust / brake FUN_00426260 (thrust = clamp(e × 0.01 + car thrust), brake
+unless (no request and e ≥ −5)), steering ±1 beyond 10°, a × (−6/π) inside,
+× ((1 − thrust) 0.95 + 0.05) on patrol. Target test FUN_00426000 (no "Can fire"
+/ dead target → patrol; attacker slot +0x2ed0 (always 0: only the create and the end of every update write it);
+first visible perception entry → memory 600; else memory−−). Attack
+FUN_004262f0 / FUN_00425900: next hop toward the node nearest the target at
+20 km/h, stopped within 3 m and pivoting toward the target (desired 5 km/h
+beyond 10°, else |a| × 28.65); the brake output is the request (0 while
+pivoting). Output FUN_00426510: ch0 steer, ch1 thrust, ch3 brake or −1.
+Graphs: loadLevelVehicles reads `graphs/graph<Graph ID>.dat` with the AIGraph's
+"Graph position" (13 of the 16 CarAI tasks drive; the three "Fake" twins have no
+graph / route). Observed in the port: mission 6 APC 800 drives W1, W3, W9, passes
+the END and continues with W17 (tracked: slow pivots at full lock).
+
+### 5. Car (full-exe class 0x42dcf0) [recovered]
+
+- Update FUN_0042e320 order: once per tick; skip when exploded; "Play sound";
+  "Open door" (CarDoor, FUN_0042e810: no car of missions 1–14 has one);
+  "Can fire" FUN_0042e870; task children (the CarAI drives the car here); magic
+  children; place / AIStationaryGun children when not driven; clear +0x2ecc /
+  +0x2ed0; explosion FUN_0042e5a0 (run at the start of the next update in the
+  port: same tick, before the children).
+- "Can fire" → (char)fistp(expr) at +0x91d; while set the perception
+  FUN_00489750(+0xa90, eye = position + (0, 0, 8192), the car matrix) runs; the
+  falling edge clears it (FUN_00489b90) and takes a new phase (FUN_004896c0).
+- Perception (compile FUN_0042f530: FUN_004896c0(1, 4, phase) with the stacked
+  4 / 8 → cone every 2nd, sight every 3rd run; cone α, γ in rad (ViewCone Alpha /
+  Gamma (degrees) × 0x53367c), length × 4096): FUN_00489750 tracks alive objects
+  of a team ≠ 1 (flags 4, own team 1), registry order, AddTail; FUN_00489960:
+  local = M^T (point − eye), |local| ≤ length, the angle of (0, y, z) from +y
+  (FUN_004148f0) < α (float), |the horizontal angle of (x, y, 0) from +y (FUN_00414950, z zeroed)| < γ; sight
+  FUN_00489b20 = the AI sight ray (≥ 0.79). `VehicleDetector` in car-ai.ts.
+- Damage FUN_0042fb40: kind-12 records only (object-damage.ts already sets the
+  car's flag for weapon 12); explosion FUN_0042e5a0: per explosion vertex
+  FUN_00480fe0(vertex, 1, rand < 30 ticks, 1.0, 12288, 3072, 3072, 3, 2, …,
+  "1009_01_1", "explo_03_l", …, 100000) and wait 30; without vertices one at the
+  origin scaled by the model's bounding radius FUN_004d0950 (× 0.25, × 0.05,
+  × 0.005; the damage data's origin radius in the port) and wait 10; then
+  the wreck (type +0x2b0: APC 601_08_1, T80 614_08_1) replaces the car
+  (FUN_004f0ee0 + FUN_00401780) and isExploded = 1. nTick 0 of any driver clears
+  destroyed / the countdown. The port swaps the car's root instance to the wreck
+  model (damage data now builds the wreck models; car instances are
+  destructible) and removes its parts; `Car_N.isExploded` reads the vehicle
+  system.
+
+### 6. Heli (full-exe class 0x4310f0) [recovered]
+
+Update FUN_004316d0: "Play sound" 0 → stop "helicopter_1", else start once;
+destroyed (+0x750, never set: helis cannot be destroyed); "Open door" →
+FUN_00426d80 sets the HeliDoor flag; "Can fire" → perception with the matrix
+rotated by FUN_004b34f0(−π/2) (implemented: world/vehicles.ts heliCanFire; it feeds the turret and the rocket pods, "Mounted weapons" below).
+HeliDoor (class registered at 0x4272a4): params (axis, speed m/s × 136.53
+(0x533680) units/tick, distance m × 4096) (FUN_004277c0); update FUN_004273b0
+slides d toward distance / 0; place FUN_004274e0: ATTA offset[axis] + d, matrix
+M L_atta. It updates with the heli's other children in the AnimTask input
+[inferred: FUN_004eb2c0 updates every attached child]. Mission 6 Mil 802: the
+door slides 2.65 m along y at 0.6 m/s once AnimTask_852 passes 20 s. Heli sound
+block (FUN_00431e30): (thrust, thrust > 0.01).
+
+### 7. Rails: SplineObj compile FUN_00502740 and Automatic Orientation [recovered]
+
+- Create 0x5026e0: γ0 = π (float 0x40490fdb), previous position 0. Compile (game:
+  no editor argument): γ ≠ γ0 → every waypoint rotated about the first by
+  Rz(γ − γ0) (float rotated offset + double first position); Position ≠ 0 → every
+  waypoint moved by the float vector Rz(γ) Position. This resolves the doc's
+  "gamma quirk trigger" (level 1: 3.1415929 = π + 1 ulp fires).
+- Waypoint compile FUN_00500ef0 (0x500f28..0x501452): with the SplineObj's or the
+  waypoint's "Automatic Orientation", a curved spline and a neighbour: t = (P −
+  P_prev) + (P_next − P) (float, missing terms left out; t = 0 → (1, 0, 0)); h =
+  unit(t.y, −t.x, 0) ((0, 1, 0) for a vertical t); c = h × t; b = c × t; e =
+  unit(t) × b; matrix columns unit(t), unit(b), unit(e). Applied before the
+  segments are built; "Align" does not prevent it, "Linear Segments" does.
+  Used by mission 10 rail 870 and a mission 9 "yard rail line"; mission 9's
+  Bridge Fencing splines have Position ≠ 0 / γ = 1.57.
+
+### 8. AreaActivate CRITERIA_VEHICLE [recovered]
+
+CRITERIA_VEHICLE is registered by the "Vehicle" base class (0x4f4160..,
+0x748-byte objects; Train, Car, Heli and Plane derive from it); its handler
+FUN_004f4560 counts every object of the vehicle list DAT_00a76c40 whose position
+(+0x20) is inside the area. The port passes every heli, car (not exploded),
+plane and train car in the world (missions 6, 7, 10 use it: gates, "vehicle -
+Game complete").
+
+### 9. Sounds [recovered groups; wiring inferred]
+
+game.ts runs each vehicle's group as an object sound (audio.objectSound) with
+its parameter block: Heli "helicopter_1" (thrust, playing), Plane "su27"
+(thrust, playing), Car the type's group (thrust, playing, min(1, speed ×
+0.001)); "t80_sounds" is defined nowhere (silent T80) [observed]. Vehicles out
+of the world keep no voice [inferred]. Level 1's heli and truck now sound too.
+
+### 10. Open points
+
+- Gear magic parameters 3–5 (0.98, 0.1, 0.5) unread; plane "Force Z" toggle has
+  no reader; car "Lights" / "PilotAnim".
+- The sub-part slot-1 update caller (per physics tick in the port).
+- CarDoor ("Open door" of cars) not animated (unused by the shipped missions).
+- That the damage data's origin radius equals FUN_004d0950's model radius
+  (no-vertex car explosions: only the Limo, which has no wreck either).
+
+---
+
+## Mounted weapons and the Missile (full exe)
+
+To be merged into `docs/vehicles.md` (new section "Mounted weapons" after the
+"Full game" §9) and `docs/combat.md` (§7.4 / §7.5 and Part 1 §7), plus the
+evidence ledger. Every address is a **full-exe** `FUN_` name / address (image
+base 0x400000). Labels: **[recovered]** read from igi.exe, **[observed]**
+measured on the shipped full-game files or in the port, **[inferred]**
+reasoning only.
+
+Implementation:
+
+- `web-port/src/engine/combat/vehicle-weapons.ts` (new): the AIStationaryGun
+  turrets and RocketPods of Cars / Helis (create, update, place, Gun fire,
+  pods, drawing).
+- `web-port/src/engine/combat/missile.ts` (new): the Missile object (type,
+  spawn, guidance, smoke draws, physics, update outcome).
+- `web-port/src/engine/combat/projectiles.ts`: the RPG approximation replaced
+  by the Missile; spawn takes an aim matrix, target point / object and the
+  firing vehicle's body; the missile's sound group and smoke system.
+- `web-port/src/engine/combat/grenade.ts`: the physics-object step
+  (`stepRigidObject`, FUN_004f2d00 demo = FUN_004fc0e0 full) exported for the
+  Missile (grenade behaviour unchanged).
+- `web-port/src/loaders/vehicles.ts`: TASKTYPE_MISSILE config decoded
+  (`MissileConfig`, `MISSILE_SYMBOLS`).
+- `web-port/src/engine/world/vehicles.ts`: `MountedWeaponHooks` called at the
+  exe's points, `afterChildren` (end of the Car update), the Heli "Can fire"
+  perception.
+- `web-port/src/loaders/mission.ts`: `MissionHost.afterTaskChildren`;
+  `web-port/src/engine/mission/mission-system.ts`: `setVehicleWeapons`, the
+  hook to `vehicles.afterChildren`; `web-port/src/engine/combat/combat-objects.ts`:
+  creates and registers the vehicle weapons, draws their gun models.
+- `web-port/src/loaders/level.ts`: the HIND rocket model 700_10_1 is loaded
+  when a RocketPod is placed; the turret gun models' and missile models' magic
+  vertices join `level.vehicles.models`.
+- `web-port/src/loaders/car-ai.ts`: `headingFromY` = FUN_00414950 zeroes z
+  (fix, below).
+
+Tests: `tests/turrets.test.ts` (12 synthetic), `tests/full-turrets.test.ts`
+(8, full data; rig `tests/turrets-rig.ts`).
+
+### 1. What the full game mounts [observed]
+
+magicobj.qvm defines five TASKTYPE_AISTATIONARYGUN objects and one
+TASKTYPE_ROCKETPOD; the vehicle models carry them as ATTA records:
+
+| Vehicle model (task) | ATTA path | Turret / pod | Gun model -> weaponconfig | Projectile |
+|---|---|---|---|---|
+| APC 601_01_1 (Car) | 17 | 601_02_1 (side 361°, up 75°, down -8°, 30°/s, "tank_turret", min 6 m) | 601_05_1 -> WEAPON_ID_APC (id 40, 12 rpm, spread 1° / 2°, muzzle velocity 5, `rpg_launch_1`) | Missile 110_02_1 (RPG18 type) |
+| T80 614_01_1 (Car) | 0 | 614_02_1 (361°, 15°, -4°, 15°/s) | 614_03_1 -> WEAPON_ID_T80 (id 43, as the APC) | Missile 110_02_1 |
+| T80, on 614_02_1 | 0/0 | 614_10_1 (360°, 45°, -20°, 30°/s) | 123_01_1 -> WEAPON_ID_M2HB (800 rpm, damage 1.0) | bullets |
+| Mil 700_01_1 (Heli) | 11 | 700_11_1 (135°, 5°, -90°, 50°/s) | 700_12_1 -> WEAPON_ID_MIL (id 41, 550 rpm, damage 0.25, spread 1° / 2°, `mil_loop` / `mil_loop_e`) | bullets |
+| Mil | 7, 8, 9, 10 | 4 x RocketPod 700_09_1 (param 15) | - | HIND rocket 700_10_1 |
+
+(456_12_1 is the mission 14 holder turret, combat.md §3.) No Plane, Train or
+other Car / Heli model attaches a weapon. Armed vehicle tasks: APC in missions
+6, 7, 8, 14; T80 in 7, 8, 10; Mil in 6, 7, 10, 12 (the Mils of mission 12
+have no "Can fire"; mission 10's #852 has "Can fire" true on exactly one tick,
+`AnimTask_801.nTick == 30 * GAME_FREQUENCY`). Gun muzzles = gun magic vertex 2:
+601_05_1 (-47, 15222, -108), 614_03_1 (27, 40937, -111), 123_01_1 (3, 5091,
+199); 700_12_1 has no magic vertex (muzzle = its origin). Turret pivots =
+turret magic vertex 1: 601_02_1 (137, -4844, 1478); 614_02_1 / 614_10_1 /
+700_11_1 none (origin).
+
+### 2. How the vehicle creates and drives them [recovered]
+
+- **Creation**: the vehicle's compile runs FUN_004f4800: a MagicObjContainer
+  (FUN_004e0930(0, vehicle): no parent, so the task walk never reaches it) at
+  +0xe8 and FUN_004c4950(container, vehicle, vehicle), which creates one object
+  per ATTA record with a magicobj definition, passing the vehicle as the
+  child's "parent" (create struct [0x22]) and the definition ([0x23]).
+  AIStationaryGun create FUN_0046eae0 stores +0xf0 the ATTA offset, +0x108 B
+  (the re-orthonormalised ATTA matrix), +0x130 the parent, +0x1b8 the
+  definition, creates the Gun (FUN_00477c50(self, 0, weapon by gun model
+  FUN_00413c00, ammo, 0)), zeroes pitch / yaw / memory / spin, poses itself
+  (FUN_0046ec90: turret = V B Rz(yaw), gun = V B Rz(yaw + pi) Ry(spin)
+  Rx(pitch) at the turret's magic vertex 1, V = the parent's matrix) and then
+  creates its OWN ATTA children with FUN_004c4950(self, self, +0x130): 614_10_1
+  lives in 614_02_1's child list but its +0x130 is the T80.
+- **Detector**: the turret update 0x46f390 asks its +0x130 for its detector
+  (method 0x54127e, getter FUN_00489630): Car FUN_0042fc70 -> +0xa90, Heli
+  FUN_00433000 -> +0x8c0, AIStationaryGunHolder FUN_0046e9e0 -> +0x168. Without
+  an answer the update does nothing (not even the Gun's update).
+- **Car order** (update FUN_0042e320 at the Car node): "Can fire" -> the car
+  perception (vehicles engineer's port); the task children (a CarAI's input,
+  0x42ec0e: FUN_004f4660 = the container's update 0x488700 = every attached
+  child's update, then +0x2ecc = 1 and the physics FUN_0042eca0, which ends by
+  placing the children with method 0x4d9fb0); then the update loop over the
+  attached children; when not driven this tick (+0x2ecc == 0): place them and
+  update the AIStationaryGun-type ones again (FUN_00401be0 / FUN_00401c40 with
+  FUN_00470400 = the class id); +0x2ecc = 0, +0x2ed0 = 0; the explosion. **So a
+  car's turrets update twice per tick**, driven or not (their Gun too: twice
+  the slew rate, half the effective cooldown and memory) [recovered; observed
+  in the port: 2 updates per tick].
+- **Heli order**: the Heli update FUN_004316d0 does NOT update the attached
+  children. The AnimTask input FUN_00431b70: nTick 0 resets the heli and
+  re-creates its children (FUN_004f4820 / FUN_004f4800), then places them;
+  nTick > 0 runs FUN_004f4660 (children update: turret and pods) before the
+  physics FUN_00431e30, which ends by placing them. A Mil whose AnimTask does
+  not run does not aim or fire.
+- **Heli "Can fire"** (FUN_004316d0, after "Play sound", the destroyed check
+  and "Open door"): (char)fistp of +0x7a8 into +0x751; while set: eye +0x848 =
+  the heli's origin, matrix +0x860 = M Rx(-pi/2) (FUN_004b34f0(m, m,
+  0xbfc90fdb) = M Rx(a)), no secondary cone (+0x8b8 = 0), FUN_00489750(+0x8c0,
+  eye, self, team 1). Falling edge: FUN_00489b90 and a new phase
+  (FUN_004896c0(1, 4, FUN_00464250(4, 8))). The compile (0x43298e..0x4329dc)
+  converts the cone like the car's (deg x 0x53367c, length x 4096) and takes a
+  perception phase; create defaults 180° / 360° / 60 m (0x4316a6..).
+- **Place** 0x46fba0 (the container's pose P, Pm): position = P + Pm
+  f32(offset); +0x70 = Pm B Rz(yaw); the Gun's pose FUN_00470050: at
+  position + (+0x70) v1, matrix = V Rz(yaw) Rx(pitch) [Ry(spin) when spin !=
+  0], V = the +0x130 matrix (FUN_004f2310 sets the Gun object's pose,
+  +0x178 / +0x190 keep it); then its own children are placed with its pose.
+  The nested MG therefore sits on the turned main turret while it aims in the
+  T80's frame [recovered; visually its mount turns by both yaws].
+- **Turret update** 0x46f390: target = the first entry of det +0x18 with
+  visible (+0x29) and an object; local = V^T (object +0x20 - turret +0x20)
+  with the PARENT's matrix; then exactly the holder turret rules (combat.md
+  §3.4, `loaders/objects/ai-stationary-gun.ts stepAiTurret`): memory 90,
+  unwrap above 2 pi, slew, clamp, fire window 5° and min range, spin, the
+  turning sound above 2°; the Gun use FUN_0046f950 (method 0x53f314 with
+  {fire, ..., user 0, 1.0}); the children (the Gun 0x478640: cooldown - 1; a
+  nested turret's update).
+- **Gun fire** FUN_00478ba0 / FUN_00479780 as for every gun (combat.md §2.4):
+  request off -> shots 0; shots == burst -> no request; shot needs cooldown 0
+  (and clip > 0 for a calibre); burst >= 2 (all four vehicle guns): the
+  "fire" sound loops from the request's start, the "Loop End" sound at its end
+  (the APC / T80 play `rpg_launch_1` twice); muzzle = gun + M v2, direction
+  col 1, aim basis FUN_00414a60; per round the spread (min for the first 4
+  shots of a hold, then max) r1 r2 r3 x spread and r4 x 2 pi from the level
+  RNG (Rz(0) Ry(az) Rx(a)); the projectile FUN_00413d10 (TASKTYPE_GUNSHOT: the
+  bullet; TASKTYPE_MISSILE: the Missile's spawn method LAB_004298a0 ->
+  FUN_00429a30(Dynamic, gun, owner, muzzle, aim matrix, weaponconfig +0x660
+  muzzle velocity, ..., +0x6e0 "Missile - Model", weaponconfig)); cooldown
+  fistp(60 / rpm x 30); clip - 1; then the GUNSHOT AI event (team 1 without a
+  user, flags 0x46, the weaponconfig range) at the muzzle and the view-kick
+  draws. Fire rates per update: APC / T80 150 ticks, M2HB 2, MIL 3 (so 75 /
+  1 tick on a car with the double update).
+- **RocketPod** (class FUN_00427830, 0x140 bytes): definition reader
+  FUN_00427d40 (param x 30 = 450 ticks); create FUN_00427940 (+0x13c =
+  FUN_004b47c0(level RNG, 450): a level-RNG draw at every creation, i.e. the
+  heli compile and every AnimTask nTick 0); place FUN_00426fa0 (P + Pm offset,
+  Pm B); update FUN_00427a70: while +0x13c < 0, for every visible entry of the
+  heli's list +0x8d8 with an object: local = pod^T (object - pod), local.y >=
+  0 and |FUN_00414950(local)| < 1.3 (double 0x533690) and FUN_004ce410(world,
+  pod, object, filter 0x54127c, {pod, pod, object}) clear -> FUN_00429a30(
+  Dynamic, pod, pod, pod + col1 x 2048 (f32 sums, 0x533688), the pod's matrix,
+  heli +0xf8 x 0.00732421875 (0x533684) + 5 (0x5335f8) m/s, the object's
+  position, 0, "700_10_1" (0x53bb60), weaponconfig 0) and +0x13c = rand(450) +
+  450 (the loop continues: two visible targets can draw two rockets in one
+  tick); every update +0x13c - 1. The list walk is the exec-style
+  "while (node->next)" over a header with a NULL tail sentinel.
+- **Car attacker slot +0x2ed0** (read by the CarAI target test
+  FUN_00426000): the only writes in the exe are the create (0x42e309) and the
+  end of every update (0x42e586), both 0; it is not a script member (the
+  car's members at 0x42e0dc.. are the ViewCone fields +0x2ec0..+0x2ec8). It is
+  always 0: the CarAI's "attacker" branch is dead code [recovered].
+- **FUN_00414950 zeroes z** (0x414954 / 0x41495d store 0 into the
+  argument's z double before normalising): it is the horizontal heading of
+  (x, y, 0) from +y, negative for x > 0, not a 3D angle. FUN_00489960 (the
+  vehicle cone) compares |FUN_004148f0| < alpha (float) and |FUN_00414950| <
+  gamma. `car-ai.ts headingFromY` is fixed accordingly (it also feeds the
+  CarAI steering, which uses FUN_00414950); all vehicle tests still pass.
+
+### 3. The Missile [recovered unless marked]
+
+- **Type** (TASKTYPE_MISSILE, reader FUN_00429730 after the Vehicle base
+  reader): the base config (cfg[0..9], drag elements, view cone) then +0x118
+  smoke (MISSILE_SMOKE_NONE 0 / NORMAL 1), +0x11c guidance (DIRECT 0,
+  HIND_HELICOPTER 1, BALLISTIC 2, ANTITANK 3, KEYBOARD 4, BOMB 5), +0x120 fuel,
+  +0x124 burn x f32 1/30, +0x128, +0x12c / +0x130 x 4096, +0x134, +0x138,
+  sprite, sound. Shipped [observed]: RPG18 110_02_1 (direct, fuel 4, thrust
+  200, turn 5, smoke spacing 0.25 m, growth 0.5 m, interval 1, size 1); cgm2
+  136_02_1 (direct, fuel 15; no weapon fires it); HIND 700_10_1 (guided,
+  fuel 30, thrust 25, turn 35 / smoothing 0.9, spacing 0.1 m, growth 0.9 m,
+  interval 0.9, size 4). All: mass 10, box 0.4 x 5 x 0.4 m, one contact point
+  at magic vertex 0 (the nose, (0, 2420.5, 0)) with restitution 0.2 and grip
+  1, rest 0.7 / 0.001, drag elements {1, (0, 4 m, 0), n z} and {1, (0, 4 m, 0),
+  n x}, sound `radarwind_1`, sprite `smoke2.spr`.
+- **Spawn** FUN_00429a30: matrix = the aim matrix, body FUN_004fb700 (mass,
+  box inertia, contact points), fuel = type fuel, drag copied by FUN_00429ef0
+  (elements 2 / 3 = 0 / 1 with point.y negated), throttle = target = 1, the
+  smoke system FUN_00429dc0 and the sound FUN_00429d80, gun / owner handles,
+  guidance init (DIRECT: aim = muzzle + col1 x 4096000; HIND: +0x840 = target
+  - muzzle, aim = target), velocity = col1 x muzzle velocity x f32 136.53334,
+  source = the weaponconfig. The Vehicle create FUN_004fb5f0 sets collision
+  detection +0x6d8 = 1.
+- **Update** 0x428390: target object -> aim; guidance; smoke while fuel != 0;
+  physics FUN_00428d00; sound position; children; no contact: when the global
+  frame (DAT_00bc2360 +0x68) & 0x1f == 0, a ray 1000 m down, nothing -> the
+  missile is deleted; contact: a ray 3 m down (the scorch hit) and
+  FUN_00480fe0(position, 1, 1, 5.0, 10240, 7168, 6144, 10, 5, hit,
+  "1009_01_1", "explo_03_l", 21, 2, 102400, source), deleted.
+- **Physics** FUN_00428d00: throttle step cfg[8] at or above 0.7 else cfg[9];
+  controls smoothed by cfg[2] / [4] / [6]; any control -> M = M Rx(c0 cfg[1]
+  pi/180) Rz(c2 cfg[5] pi/180); fuel 0 -> M = M Rz((0.3 - r3) 0.1) Ry((0.7 -
+  r2) 0.1) Rx((0.5 - r1) 0.1) with r1, r2, r3 drawn in that order from the
+  missile generator DAT_0057bc88 (FUN_004b4770; initialised once by
+  FUN_004b4720 at the class registration, never re-seeded: process-wide);
+  throttle and fuel -> body force (0, cfg[7] throttle g, 0) at the origin;
+  fuel = max(0, fuel - burn); unless at rest (FUN_004fc7b0: contacts, no wake
+  flag, no pending force, slow): flat-plate drag FUN_004ec2c0 (= the vehicles'
+  `applyDrag`) and FUN_004fc0e0(g 44.600887, linear 0.95, angular 0.92) =
+  the demo FUN_004f2d00 the grenades use (FUN_004fbf90 weight + integrate +
+  damping; FUN_004fb9a0 contact pass: per contact point the path P -> P + (v
+  + w x r) cast with the missile's filter, vn = FUN_004fc870 (> 1 separating,
+  <= -1 contact), impulse FUN_004fc8e0 with (1 + e), friction FUN_004fcca0,
+  contacts + 1, one per step; move above 40.96; inside test FUN_004fc620:
+  5 m up from each point, first hit a back face -> previous pose, contacts +
+  1).
+- **Ray filter** LAB_00427fc0 (the Missile's answer to method 0x539547): a ray
+  of the missile itself, its gun or its owner, or any other Missile, passes.
+  The missile's own rays send the record {self, gun, owner, 1.0}.
+- **HIND guidance** FUN_00428930: d = position - aim, P = (d . o) d + 12800
+  unit((d . o) d) (FUN_004b30c0, double 0x40c80000...), FUN_00428b60(P): local
+  = M^T (P - position), input0 = clamp(FUN_004148f0(local), -1, 1) (pitch,
+  positive up), input2 = clamp(FUN_00414950(local), -1, 1) (yaw, positive
+  left). P is used as a world point; (d . o) d is huge and points along -d
+  while d . o < 0, so the rocket turns toward the aim point (and away once it
+  passed it).
+- **Smoke** FUN_00428630: counter +0x878 >= fistp(+0x880): one draw (alpha r
+  x 0.3 + 0.15), n = max(1, fistp(speed / +0x884)) particles spaced v / n
+  from the tail (magic vertex 1 for a model with two or more magic vertices
+  [inferred: the model field read is its vertex count]); per particle three
+  unused draws, then FUN_004fe120(system, point, unit velocity, alpha, spin
+  (0.5 - r) x 0.0376991, angle r x 2 pi, scale 1, life fistp(+0x88c x 3),
+  fade fistp((r x 0.3 + 0.6) x +0x88c x 30)): six draws per particle. System
+  FUN_00429dc0 -> FUN_004fdf00 (= the demo's FUN_004f4b20 particle system,
+  emit FUN_004fe120 = FUN_004f4d40): sprite, acceleration (0, 0, 0.0217778),
+  colour 12.7 (dark, as the explosion smoke), half-size +0x12c, far 2048000,
+  flags 0x1080000, growth (+0x130 / +0x12c - 1) / (+0x88c x 30), 2000
+  particles, a child of the Dynamic task removed when empty (it outlives the
+  missile).
+- **Consequences** [observed in the port]: an RPG18 / turret round reaches
+  53.1 m/s after 10 ticks and 124.0 m/s at burnout (tick 120: v <- 0.95 (v +
+  892)), then tumbles and slows (0.95 per tick) to a few m/s within 2 s; the
+  HIND rocket's thrust 25 gives only ~15.5 m/s (0.95 (v + 111.5)) and it sinks
+  until its guidance pitches up.
+
+### 4. Port notes and approximations
+
+- Collision: the port merges a vehicle's ATTA parts into the vehicle's
+  dynamic body, so a turret round's or pod rocket's rays and the pods'
+  clear-line test skip the firing vehicle's whole body [approximation: the
+  exe skips only the gun and the turret / pod objects]. The turret's collision
+  faces stay at the build pose (as the wheels').
+- Turret bullets use the soldiers' bullet path with team 1 (soldiers of team
+  1 are spared) and hit probability 1.0 against the player (the record's 1.0,
+  no AI user) [inferred, as the mission 14 holder turrets].
+- The pods' clear-line test FUN_004ce410 is a set-0 + terrain ray [inferred:
+  the per-class answers to filter 0x54127c are not traced].
+- Missile contact rays hit the humans (but the owner) with the normal facing
+  the ray [inferred]; the player's FUN_0045d100 draw on such a ray and the hit
+  object's contact method (FUN_004fc860 answers, FUN_004fbe86's v x 0.25) are
+  not modelled.
+- The pods' create draws happen when the vehicle system is built (the heli
+  compile) and at every AnimTask nTick 0; whether the level RNG is seeded
+  before the exe's compile is [inferred].
+- Drawing: the turret ATTA instance is turned each tick (setInstanceTransform
+  with the turret pose), the gun model (601_05_1, 614_03_1, 123_01_1,
+  700_12_1) is drawn at the Gun's pose with its GUNFLAME muzzle flash
+  (render/combat-models.ts); the missile models with their smoke trails.
+- Cheats: Unlimited Health protects against turret bullets and missile
+  explosions (both go through player.damage); Invisible To Enemies takes the
+  player out of the vehicle perception (captureHumans' inWorld), so the
+  turrets lose the target and stop.
+- Mission 14 holder turrets (combat engineer's port), for the record: the
+  holder update calls the place method 0x4d9fb0 (0x46e753), so the sentry gun's
+  pose there is also FUN_00470050's (H Rz(yaw) Rx(pitch) Ry(spin), no B) after
+  the first tick; `ai-turrets.ts` uses FUN_0046ec90's H B Rz(yaw + pi) Ry(spin)
+  Rx(pitch) every tick (same barrel direction for B = Rz(pi); the roll and the
+  update / place order differ).
+
+### Open points (mounted weapons)
+
+- The missile contact with an object that answers FUN_004fc860 (humans,
+  cars: v x 0.25 at 0x4fbe86) and the player's FUN_0045d100 draw on a missile
+  ray; the exact per-class answers of FUN_004ce410 (pods' clear line).
+- The smoke start for a missile model with a single magic vertex
+  (FUN_00414ed0); no shipped missile has one.
+- MISSILE_TYPE_MISSILE_BALLISTIC / ANTITANK / KEYBOARD / BOMB guidance
+  (FUN_00428a60, FUN_00428ad0, FUN_00428a00) is not ported: no shipped type
+  uses them.
+- Turret / gun collision follows the vehicle's build pose (the turret's
+  rotation is render only).
