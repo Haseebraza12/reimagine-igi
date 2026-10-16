@@ -328,7 +328,7 @@ export function createInteractions(ctx: GameContext, options: InteractionOptions
     if (loadedFor === lv && models) return Promise.resolve();
     if (loading && loadedFor === lv) return loading;
     loadedFor = lv;
-    loading = loadModelInfo(source, interactionModels(lv))
+    loading = loadModelInfo(source, interactionModels(lv), lv.paths)
       .then((m) => {
         if (loadedFor !== lv) return;
         models = m;

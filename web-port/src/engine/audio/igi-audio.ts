@@ -59,12 +59,8 @@ export interface IgiAudioPaths {
   config: string | null;
 }
 
-/** Level-1 (Trainyard) audio files. The mission list is the observed inventory (docs/audio.md §1). */
-export const LEVEL1_AUDIO_PATHS: IgiAudioPaths = {
-  commonSounds: "common/sounds/sounds.res",
-  commonDefinitions: "common/sounds/sounds.qvm",
-  missionSoundDir: "missions/location0/level1/sounds/",
-  missionSoundFiles: [
+/** The loose .wav files of level 1's MISSION:sounds directory (the observed inventory, docs/audio.md §1). */
+export const LEVEL1_SOUND_FILES: readonly string[] = [
     "_cut01_01.wav",
     "m01_ing_01.wav",
     "m01_ing_02.wav",
@@ -94,13 +90,30 @@ export const LEVEL1_AUDIO_PATHS: IgiAudioPaths = {
     "m1_trainext01.wav",
     "m1_type01.wav",
     "machinery_01.wav",
-  ],
-  missionDefinitions: "missions/location0/level1/sounds/sounds.qvm",
-  menuSounds: "menusystem/SOUND/sounds.res",
-  materials: "material/material.qvm",
-  animTriggers: "animtrigger/animtrigger.qvm",
-  config: "config.qvm",
-};
+  ];
+
+/**
+ * A mission's audio files: the shared archives plus its MISSION:sounds directory. `soundFiles` is
+ * that directory's listing (igi.exe loads every file there; HTTP has no listing, so the staging
+ * manifest supplies it); without it only the files the mission's definitions name are read.
+ */
+export function audioPathsFor(levelDir: string, soundFiles: readonly string[] = []): IgiAudioPaths {
+  const L = levelDir.replace(/\/+$/, "");
+  return {
+    commonSounds: "common/sounds/sounds.res",
+    commonDefinitions: "common/sounds/sounds.qvm",
+    missionSoundDir: `${L}/sounds/`,
+    missionSoundFiles: soundFiles,
+    missionDefinitions: `${L}/sounds/sounds.qvm`,
+    menuSounds: "menusystem/SOUND/sounds.res",
+    materials: "material/material.qvm",
+    animTriggers: "animtrigger/animtrigger.qvm",
+    config: "config.qvm",
+  };
+}
+
+/** Level-1 (Trainyard) audio files. */
+export const LEVEL1_AUDIO_PATHS: IgiAudioPaths = audioPathsFor("missions/location0/level1", LEVEL1_SOUND_FILES);
 
 // ---------------------------------------------------------------- samples
 

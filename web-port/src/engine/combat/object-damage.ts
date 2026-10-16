@@ -686,7 +686,7 @@ export function createDamageSystem(ctx: GameContext, options: DamageSystemOption
   const system: DamageSystem = {
     async load(raw, lvl, w) {
       const names = damageModelNames(lvl);
-      const loaded = await loadDamageModelData(raw, names.bounds, names.build, (key) => lvl.textures.has(key));
+      const loaded = await loadDamageModelData(raw, names.bounds, names.build, (key) => lvl.textures.has(key), lvl.paths);
       for (const warning of loaded.warnings) console.info(`[damage] ${warning}`);
       system.attach(lvl, w, loaded);
       if (options.fx !== false) {

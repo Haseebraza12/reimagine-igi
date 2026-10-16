@@ -30,6 +30,8 @@
  * errors such as missing game files.
  */
 import { CHEAT_MENU_TEXT, injectCheatMenu } from "./cheat-menu";
+import type { MissionInfo } from "./assets";
+import { MODE_MENU_TEXT, PLAY_MODE, injectModeDialog, type PlayMode } from "./mode-menu";
 import type { IAssetSource } from "../../contracts";
 import { createHttpAssetSource, type UiFont } from "../../loaders";
 import type { GameContext } from "../context";
@@ -238,6 +240,8 @@ export interface Hud {
    *                               GOGfxPerformance(0) and does not apply other choices yet
    */
   readonly settings: MenuConfig;
+  /** A staged mission by number (DefineMission data and its folders), or null. */
+  missionInfo(id: number): MissionInfo | null;
   /**
    * The Credits screen's TypeWriterBox script. It is compiled into igi.exe
    * (130 entries at VA 0x537cd8); pass the result of readExeCredits() run on
@@ -277,7 +281,10 @@ export function createHud(ctx: HudContext, options: HudOptions = {}): Hud {
   let externalTicks = false;
   let tickAccumulator = 0;
   let legacyStatusAllowed = true;
+  /** The mission picked in Select Mission (Game_SetMission). */
   let activeMission = 1;
+  /** Story Mode or Free Mode (the port's mode dialog); story until chosen. */
+  let playMode: PlayMode = "story";
   let paused = false;
   let scope: ScopeView | null = null;
   const binocularBars = new BinocularBars();
@@ -533,7 +540,8 @@ export function createHud(ctx: HudContext, options: HudOptions = {}): Hud {
   if (hasDom) window.addEventListener("keydown", onKeyDown);
 
   // --- strings ----------------------------------------------------------------
-  const menuText = (key: string) => assets?.menuStrings.get(key.toLowerCase()) ?? CHEAT_MENU_TEXT.get(key.toLowerCase()) ?? `RM: ${key}`;
+  const menuText = (key: string) =>
+    assets?.menuStrings.get(key.toLowerCase()) ?? CHEAT_MENU_TEXT.get(key.toLowerCase()) ?? MODE_MENU_TEXT.get(key.toLowerCase()) ?? `RM: ${key}`;
   /** A StatusMessage Text: a messages.res key (the task parameter) or already-resolved text. */
   function resolveMessage(text: string): string {
     const found = assets?.messages.get(text.toLowerCase());
@@ -554,7 +562,12 @@ export function createHud(ctx: HudContext, options: HudOptions = {}): Hud {
         const pic = archiveOf().pictures.get(name.toLowerCase());
         return pic ? { w: pic.width, h: pic.height } : null;
       },
-      missions: () => (assets?.missions ?? []).filter((m) => m.id <= Math.max(1, activeMission)),
+      // Story Mode: the missions up to the profile's progress (GOActiveMission), as igi.exe lists
+      // them; Free Mode: every installed mission.
+      missions: () => (assets?.missions ?? []).filter((m) => playMode === "free" || m.id <= Math.max(1, config.profile.activeMission)),
+      setPlayMode: (m) => {
+        playMode = m === PLAY_MODE.free ? "free" : "story";
+      },
       activeMission: () => activeMission,
       levelFailed: () => failed,
       playerDead: () => failedDead || !ctx.player.alive,
@@ -712,6 +725,8 @@ export function createHud(ctx: HudContext, options: HudOptions = {}): Hud {
   const ready = loadUiAssets(source).then((a) => {
     // Port addition: the Cheats screen in Configuration and in the pause menu (ui/cheat-menu.ts).
     if (!injectCheatMenu(a.mainMenu, "main")) console.warn("[ui] main menu: no place for the Cheats entry");
+    // Port addition: "Play Project IGI" asks for Story Mode / Free Mode first (ui/mode-menu.ts).
+    if (!injectModeDialog(a.mainMenu)) console.warn("[ui] main menu: no place for the mode dialog");
     if (!injectCheatMenu(a.ingameMenu, "ingame")) console.warn("[ui] in-game menu: no place for the Cheats entry");
     if (disposed) return;
     assets = a;
@@ -756,6 +771,13 @@ export function createHud(ctx: HudContext, options: HudOptions = {}): Hud {
     if (!assets) return;
     if (completeCountdown > 0 && --completeCountdown === 0) {
       loading = null;
+      // Story Mode: the mission's "next mission" (DefineMission) becomes playable for the profile.
+      // Free Mode leaves the story progress alone. [inferred: the exe's progress update was not traced]
+      const done = assets?.missions.find((m) => m.id === activeMission);
+      if (playMode === "story" && done && done.nextMission > 0 && config.profile.activeMission < done.nextMission) {
+        config.profile.activeMission = done.nextMission;
+        storeConfig();
+      }
       callbacks.onQuit?.("complete");
       showMainMenu();
       return;
@@ -1045,6 +1067,7 @@ export function createHud(ctx: HudContext, options: HudOptions = {}): Hud {
     mapComputerView: () => computer?.view() ?? null,
     computerLog,
     settings: config,
+    missionInfo: (id: number) => assets?.missions.find((m) => m.id === id) ?? null,
     setCreditsScript(script: readonly TypewriterEntry[] | null): void {
       credits = script ? script.slice() : null;
     },

@@ -88,47 +88,71 @@ export interface IgiLevelPaths {
   materials: string;
 }
 
-export const LEVEL1_PATHS: IgiLevelPaths = {
-  objects: "missions/location0/level1/objects.qvm",
-  lightmaps: "missions/location0/level1/lightmaps/lightmaps.res",
-  terrain: {
-    ctr: "missions/location0/level1/terrain/terrain.ctr",
-    cmd: "missions/location0/level1/terrain/terrain.cmd",
-    hmp: "missions/location0/level1/terrain/terrain.hmp",
-    tex: "missions/location0/level1/terrain/terrain.tex",
-    bit: "missions/location0/level1/terrain/terrain.bit",
-    lmp: "missions/location0/level1/terrain/terrain.lmp",
-    qvm: "missions/location0/level1/terrain/terrain.qvm",
-  },
-  archives: [
-    {
-      id: "level1",
-      models: "missions/location0/level1/models/level1.res",
-      mtp: "missions/location0/level1/level1.mtp",
-      textures: "missions/location0/level1/textures/level1.res",
+/**
+ * Where a mission's files are: DefineMission(id, name, desc, "", next, level path, common path,
+ * level path, location, level, sprite) in the level's mission.qvm (the exe builds its LOCAL /
+ * MISSION / LOCATION names from these [recovered FUN_0041ab50 argument order, docs/hud.md]).
+ */
+export interface MissionLocation {
+  /** Mission number ("Mission N Name" / "Mission N Desc" in missions.res). */
+  id: number;
+  /** "missions/location0/level1" */
+  levelDir: string;
+  /** "missions/location0/common" */
+  commonDir: string;
+  /** "location0" */
+  location: string;
+  /** "level1" */
+  level: string;
+}
+
+/** The mission files the port reads, by igi.exe's layout of a mission and its location. */
+export function levelPathsFor(m: MissionLocation): IgiLevelPaths {
+  const L = m.levelDir.replace(/\/+$/, "");
+  const C = m.commonDir.replace(/\/+$/, "");
+  return {
+    objects: `${L}/objects.qvm`,
+    lightmaps: `${L}/lightmaps/lightmaps.res`,
+    terrain: {
+      ctr: `${L}/terrain/terrain.ctr`,
+      cmd: `${L}/terrain/terrain.cmd`,
+      hmp: `${L}/terrain/terrain.hmp`,
+      tex: `${L}/terrain/terrain.tex`,
+      bit: `${L}/terrain/terrain.bit`,
+      lmp: `${L}/terrain/terrain.lmp`,
+      qvm: `${L}/terrain/terrain.qvm`,
     },
-    {
-      id: "location0",
-      models: "missions/location0/common/models/location0.res",
-      mtp: "missions/location0/common/location0.mtp",
-      textures: "missions/location0/common/textures/location0.res",
-    },
-  ],
-  magicObjects: "magicobj/magicobj.qvm",
-  weaponConfig: "weapons/weaponconfig.qvm",
-  sounds: "common/sounds/sounds.res",
-  objectiveText: "language/english/objectives.res",
-  messageText: "language/english/messages.res",
-  missionText: "language/english/missions.res",
-  missionNumber: 1,
-  config: "config.qvm",
-  aiSettings: "common/ai/settings.qvm",
-  aiScripts: "common/ai/",
-  missionAiScripts: "missions/location0/level1/ai/",
-  anims: "common/anims/",
-  humanPlayer: "humanplayer/humanplayer.qvm",
-  materials: "material/material.qvm",
+    archives: [
+      { id: m.level, models: `${L}/models/${m.level}.res`, mtp: `${L}/${m.level}.mtp`, textures: `${L}/textures/${m.level}.res` },
+      { id: m.location, models: `${C}/models/${m.location}.res`, mtp: `${C}/${m.location}.mtp`, textures: `${C}/textures/${m.location}.res` },
+    ],
+    magicObjects: "magicobj/magicobj.qvm",
+    weaponConfig: "weapons/weaponconfig.qvm",
+    sounds: "common/sounds/sounds.res",
+    objectiveText: "language/english/objectives.res",
+    messageText: "language/english/messages.res",
+    missionText: "language/english/missions.res",
+    missionNumber: m.id,
+    config: "config.qvm",
+    aiSettings: "common/ai/settings.qvm",
+    aiScripts: "common/ai/",
+    missionAiScripts: `${L}/ai/`,
+    anims: "common/anims/",
+    humanPlayer: "humanplayer/humanplayer.qvm",
+    materials: "material/material.qvm",
+  };
+}
+
+/** Mission 1, Trainyard (the only mission of the supplied installation). */
+export const LEVEL1_MISSION: MissionLocation = {
+  id: 1,
+  levelDir: "missions/location0/level1",
+  commonDir: "missions/location0/common",
+  location: "location0",
+  level: "level1",
 };
+
+export const LEVEL1_PATHS: IgiLevelPaths = levelPathsFor(LEVEL1_MISSION);
 
 // ---------------------------------------------------------------------------
 // Output types
@@ -425,6 +449,8 @@ export interface LevelTerrain {
 }
 
 export interface IgiLevel {
+  /** The files this level was read from (its mission's paths; the other loaders take them from here). */
+  paths: IgiLevelPaths;
   /** Every objects.qvm task, depth-first with parents first (tasks.ts), for the task runtime. */
   tasks: IgiTask[];
   /** The objects.qvm task tree roots (buildMissionTasks). */
@@ -1514,6 +1540,7 @@ export async function loadIgiLevel(raw: IAssetSource, paths: IgiLevelPaths = LEV
 
   const n = paths.missionNumber;
   return {
+    paths,
     name: missionText.get(`Mission ${n} Name`) ?? `Mission ${n}`,
     description: missionText.get(`Mission ${n} Desc`) ?? "",
     origin,

@@ -10,6 +10,7 @@
 import type { DecodedTexture, IAssetSource } from "../contracts";
 import {
   LEVEL1_PATHS,
+  type IgiLevelPaths,
   decodeTex,
   decodeTexLayers,
   loadIgiLevel,
@@ -127,17 +128,17 @@ export function playAreaOf(positions: Float32Array): PlayArea {
   };
 }
 
-/** Files every boot needs; checked up front for a clear error message. */
-export const REQUIRED_RAW_FILES = [
-  LEVEL1_PATHS.objects,
-  LEVEL1_PATHS.terrain.ctr,
-  LEVEL1_PATHS.archives[0].models,
-  LEVEL1_PATHS.magicObjects,
-];
+/** Files a mission needs; checked up front for a clear error message. */
+export function requiredRawFiles(paths: IgiLevelPaths = LEVEL1_PATHS): string[] {
+  return [paths.objects, paths.terrain.ctr, paths.archives[0].models, paths.magicObjects];
+}
 
-export async function missingRawFiles(raw: IAssetSource): Promise<string[]> {
+/** Level 1's required files (kept for callers and tests). */
+export const REQUIRED_RAW_FILES = requiredRawFiles(LEVEL1_PATHS);
+
+export async function missingRawFiles(raw: IAssetSource, paths: IgiLevelPaths = LEVEL1_PATHS): Promise<string[]> {
   const missing: string[] = [];
-  for (const path of REQUIRED_RAW_FILES) {
+  for (const path of requiredRawFiles(paths)) {
     if (!(await raw.exists(path))) missing.push(path);
   }
   return missing;
@@ -147,9 +148,10 @@ export async function loadLevel(
   ctx: GameContext,
   raw: IAssetSource,
   progress: (text: string) => void = () => {},
+  paths: IgiLevelPaths = LEVEL1_PATHS,
 ): Promise<LoadedLevel> {
   progress("Decoding mission data…");
-  const level = await loadIgiLevel(raw);
+  const level = await loadIgiLevel(raw, paths);
   for (const warning of level.warnings) console.info(`[level] ${warning}`);
 
   // Sky, clouds, fog and lights first: terrain and objects share its fog uniforms.
@@ -165,7 +167,7 @@ export async function loadLevel(
   const mipBias = { value: readMipMapControl(level.tasks)?.lodBias ?? 0 };
 
   progress("Building terrain…");
-  const layers = decodeTexLayers(await raw.readBinary(LEVEL1_PATHS.terrain.tex));
+  const layers = decodeTexLayers(await raw.readBinary(level.paths.terrain.tex));
   // Cells, levels and geomorphs are chosen per frame for the camera, as
   // igi.exe does (world/terrain-render.ts); collision keeps level 16 below.
   const terrain = buildTerrain(level.terrain.octree, level.terrain.look, layers, {
@@ -199,7 +201,7 @@ export async function loadLevel(
 
   progress("Loading effects…");
   const [effectTextures, impactMaterials] = await Promise.all([readEffectTextures(raw), readImpactTable(raw)]);
-  const effectAssets = await loadEffectAssets(raw, level, impactMaterials);
+  const effectAssets = await loadEffectAssets(raw, level, impactMaterials, level.paths);
   ctx.systems.effects?.setLevelResources({ level, textures: effectTextures, impactMaterials, fog: environment.fog, mipBias, assets: effectAssets });
 
   const viewModels = createViewModels(level, environment.sun, environment.ambient);

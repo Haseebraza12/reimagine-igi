@@ -210,6 +210,8 @@ export interface MenuEnvironment {
   heldKeys?(): ReadonlySet<string>;
   /** Main menu idle for more than 3600 logic ticks (FUN_00416f70 at 0x416ffe): Flow 8, the looping intro. */
   attract?(): void;
+  /** Port: Game_SetPlayMode(0 story / 1 free) from the mode dialog (ui/mode-menu.ts). */
+  setPlayMode?(mode: number): void;
 }
 
 export interface MenuInputState {
@@ -972,6 +974,9 @@ export class MenuManager {
         return 1;
       case "Game_SetMission":
         this.env.setMission(a(0));
+        return 1;
+      case "Game_SetPlayMode":
+        this.env.setPlayMode?.(a(0));
         return 1;
       case "LevelFlow_LevelFailed":
         return this.env.levelFailed() ? 1 : 0;

@@ -87,7 +87,7 @@ export function mefSphere(buffer: ArrayBuffer): { centre: [number, number, numbe
 }
 
 /** Load the LOD variants, lod.qvm distances and spheres of the given soldier models. */
-export async function loadSoldierLods(raw: IAssetSource, level: IgiLevel, models: Iterable<string>, paths: IgiLevelPaths = LEVEL1_PATHS): Promise<Map<string, SoldierLodSet>> {
+export async function loadSoldierLods(raw: IAssetSource, level: IgiLevel, models: Iterable<string>, paths: IgiLevelPaths = level.paths ?? LEVEL1_PATHS): Promise<Map<string, SoldierLodSet>> {
   const wanted = new Set(models);
   const out = new Map<string, SoldierLodSet>();
   if (wanted.size === 0) return out;

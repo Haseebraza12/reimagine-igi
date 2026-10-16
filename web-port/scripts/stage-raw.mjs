@@ -13,7 +13,7 @@
  *
  * Every copied file is verified byte-for-byte after copying.
  */
-import { copyFile, mkdir, readFile, readdir, stat } from "node:fs/promises";
+import { copyFile, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -108,6 +108,58 @@ async function main() {
       bytes += a.length;
     }
   }
+  // Every mission of the installation (missions/<location>/<level>/mission.qvm): its level folder
+  // and its location's common folder, at lower-case paths (DefineMission names them in lower case),
+  // and game-data/missions.json listing each mission script and its MISSION:sounds files.
+  const manifest = { version: 1, missions: [] };
+  const staged = new Set();
+  const copyTree = async (dirRel) => {
+    let files;
+    try {
+      files = await listFiles(join(source, dirRel));
+    } catch {
+      return;
+    }
+    for (const file of files) {
+      const rel = relative(source, file).split("\\").join("/");
+      const relLower = rel.toLowerCase();
+      if (staged.has(relLower)) continue;
+      staged.add(relLower);
+      const to = join(target, relLower);
+      await mkdir(dirname(to), { recursive: true });
+      await copyFile(file, to);
+      const [a, b] = await Promise.all([readFile(file), readFile(to)]);
+      if (!a.equals(b)) throw new Error(`verification failed for ${rel}`);
+      copied++;
+      bytes += a.length;
+    }
+  };
+  const missionsDir = join(source, "missions");
+  let locations = [];
+  try {
+    locations = (await readdir(missionsDir, { withFileTypes: true })).filter((e) => e.isDirectory());
+  } catch {
+    /* no missions folder: reported as missing above */
+  }
+  for (const loc of locations) {
+    const levels = (await readdir(join(missionsDir, loc.name), { withFileTypes: true })).filter((e) => e.isDirectory());
+    for (const lvl of levels) {
+      const files = await readdir(join(missionsDir, loc.name, lvl.name)).catch(() => []);
+      const script = files.find((f) => f.toLowerCase() === "mission.qvm");
+      if (!script) continue;
+      await copyTree(join("missions", loc.name, lvl.name));
+      const common = (await readdir(join(missionsDir, loc.name))).find((f) => f.toLowerCase() === "common");
+      if (common) await copyTree(join("missions", loc.name, common));
+      const soundDir = files.find((f) => f.toLowerCase() === "sounds");
+      const sounds = soundDir
+        ? (await readdir(join(missionsDir, loc.name, lvl.name, soundDir))).filter((f) => f.toLowerCase().endsWith(".wav")).map((f) => f.toLowerCase()).sort()
+        : [];
+      manifest.missions.push({ script: `missions/${loc.name}/${lvl.name}/mission.qvm`.toLowerCase(), sounds });
+    }
+  }
+  manifest.missions.sort((a, b) => a.script.localeCompare(b.script, "en", { numeric: true }));
+  await writeFile(join(target, "missions.json"), JSON.stringify(manifest, null, 1) + "\n");
+  console.log(`Missions found: ${manifest.missions.length} (${manifest.missions.map((m) => m.script.replace(/^missions\//, "").replace(/\/mission\.qvm$/, "")).join(", ")})`);
   console.log(`Staged ${copied} files (${(bytes / 1048576).toFixed(1)} MiB) from ${source} into ${target}`);
   if (missing.length) {
     console.error(`Missing from the game directory:\n  ${missing.join("\n  ")}`);

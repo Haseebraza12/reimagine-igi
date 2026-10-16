@@ -1014,6 +1014,16 @@ LEFT / RIGHT / RETURN reach widgets through their selectable MenuFrame.
 | Gamma, performance flags, resolution, device | graphics block | renderer settings | resolution: the frame size; performance flags: terrain threshold and model LOD scale at the next level load (bits 1/2/4/8 not modelled); gamma: no effect, as in igi.exe (no gamma ramp is set, [rendering.md](rendering.md)); device: WebGL only |
 | Blood, content password | +0x8, global | blood effects | blood: `effects.setBlood`; password: stored |
 
+**Story / Free mode dialog** (port addition, ui/mode-menu.ts): "Play
+Project IGI" (900, text key "Single Player") opens DialogWindow 936 at the
+Quit dialog's place and size (197, 234, 256 × 133) with "Story Mode", "Free
+Mode" and "Cancel". Both modes run `Game_SetPlayMode(n)`, close the dialog and
+push the original Select Mission screen 914. Story Mode lists the missions up
+to the profile's progress (as igi.exe); Free Mode lists every staged mission.
+Finishing a mission in Story Mode makes its DefineMission "next mission"
+playable [inferred: the exe's progress update was not traced]; Free Mode
+leaves the progress alone.
+
 **Cheats screen** (port addition, ui/cheat-menu.ts): the entry "Cheats" is
 added to Configuration (904, after Content Control) and to Game Paused
 (in-game 900, after Controls); it pushes screen 920, built like Content

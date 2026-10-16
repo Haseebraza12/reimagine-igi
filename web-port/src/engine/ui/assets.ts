@@ -4,6 +4,7 @@
  * user's installation). Evidence for each file: docs/hud.md section 1.
  */
 import type { IAssetSource } from "../../contracts";
+import type { MissionLocation } from "../../loaders";
 import {
   composeUiPicture,
   flattenTasks,
@@ -48,7 +49,18 @@ export interface MissionInfo {
   /** missionsprites.res member, e.g. "mission1.spr". */
   sprite: string;
   nextMission: number;
+  /** DefineMission's level / common directories, location and level names (loaders/level.ts levelPathsFor). */
+  location: MissionLocation;
+  /** The mission's MISSION:sounds listing from the staging manifest; null = not known (level 1: built in). */
+  soundFiles: string[] | null;
 }
+
+/**
+ * game-data/missions.json, written by `npm run stage`: the mission.qvm of every staged mission and
+ * the listing of its sounds directory (the browser cannot list directories). Optional: without it
+ * the port knows mission 1 only.
+ */
+export const MISSION_MANIFEST = "missions.json";
 
 export interface UiAssets {
   status: UiArchive;
@@ -80,7 +92,7 @@ export const UI_EXTRA_PATHS = {
   computerStrings: "language/english/computer.res",
   objectiveStrings: "language/english/objectives.res",
   weaponConfig: "weapons/weaponconfig.qvm",
-  /** The port ships mission 1 only; its DefineMission call names the menu picture. */
+  /** Mission 1's script, used when there is no staging manifest (MISSION_MANIFEST). */
   missionScripts: ["missions/location0/level1/mission.qvm"],
 } as const;
 
@@ -193,12 +205,24 @@ export function readMissionDefinition(buffer: ArrayBuffer, strings: Map<string, 
     const descKey = typeof a[2] === "string" ? a[2] : "";
     const next = typeof a[4] === "number" ? a[4] : -1;
     const sprite = typeof a[10] === "string" ? a[10] : `mission${id}.spr`;
+    const text = (i: number) => (typeof a[i] === "string" ? (a[i] as string).replace(/\\/g, "/") : "");
+    const levelDir = text(5) || text(7);
+    const level = text(9) || levelDir.split("/").pop() || `level${id}`;
+    const location = text(8) || levelDir.split("/").slice(-2, -1)[0] || "location0";
     out.push({
       id,
       name: strings.get(nameKey.toLowerCase()) ?? `RM: ${nameKey}`,
       description: strings.get(descKey.toLowerCase()) ?? `RM: ${descKey}`,
       sprite: sprite.toLowerCase(),
       nextMission: next,
+      location: {
+        id,
+        levelDir: levelDir.toLowerCase(),
+        commonDir: (text(6) || `missions/${location}/common`).toLowerCase(),
+        location: location.toLowerCase(),
+        level: level.toLowerCase(),
+      },
+      soundFiles: null,
     });
   }
   return out;
@@ -251,9 +275,43 @@ export async function loadUiAssets(source: IAssetSource): Promise<UiAssets> {
     }
   }
   for (const [k, v] of messages) if (!computerStrings.has(k)) computerStrings.set(k, v);
-  const missions: MissionInfo[] = [];
-  for (const path of UI_EXTRA_PATHS.missionScripts) {
-    missions.push(...(await parse(path, (b) => readMissionDefinition(b, missionStrings))()));
-  }
+  const missions = await readMissions(source, missionStrings, parse);
   return { status, computer, ingame, main, loading, missionSprites, commonSprites, menuStrings, messages, missionStrings, weapons, mainMenu, ingameMenu, missions, computerStrings };
+}
+
+/** The staged missions (MISSION_MANIFEST), by mission number; mission 1 alone without a manifest. */
+async function readMissions(
+  source: IAssetSource,
+  strings: Map<string, string>,
+  parse: <T>(path: string, fn: (b: ArrayBuffer) => T) => () => Promise<T>,
+): Promise<MissionInfo[]> {
+  let entries: Array<{ script: string; sounds: string[] | null }> = UI_EXTRA_PATHS.missionScripts.map((script) => ({ script, sounds: null }));
+  try {
+    if (await source.exists(MISSION_MANIFEST)) {
+      const json = JSON.parse(new TextDecoder().decode(await source.readBinary(MISSION_MANIFEST))) as { missions?: unknown };
+      const list = Array.isArray(json.missions) ? json.missions : [];
+      const read = list
+        .filter((m): m is { script: string; sounds?: unknown } => !!m && typeof (m as { script?: unknown }).script === "string")
+        .map((m) => ({ script: m.script, sounds: Array.isArray(m.sounds) ? m.sounds.filter((f): f is string => typeof f === "string") : null }));
+      if (read.length) entries = read;
+    }
+  } catch (error) {
+    console.warn(`[ui] ${MISSION_MANIFEST}: ${(error as Error).message} (only mission 1 is listed)`);
+  }
+  const byId = new Map<number, MissionInfo>();
+  for (const e of entries) {
+    let defs: MissionInfo[] = [];
+    try {
+      defs = await parse(e.script, (b) => readMissionDefinition(b, strings))();
+    } catch (error) {
+      console.warn(`[ui] ${e.script}: ${(error as Error).message}`);
+      continue;
+    }
+    for (const d of defs) {
+      if (!Number.isFinite(d.id) || byId.has(d.id)) continue;
+      d.soundFiles = e.sounds;
+      byId.set(d.id, d);
+    }
+  }
+  return [...byId.values()].sort((a, b) => a.id - b.id);
 }

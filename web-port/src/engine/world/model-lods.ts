@@ -151,7 +151,7 @@ function engineModel(name: string, source: MefModel, textureKeys: (string | null
   };
 }
 
-export async function loadModelLods(raw: IAssetSource, level: IgiLevel, paths: IgiLevelPaths = LEVEL1_PATHS): Promise<ModelLodLibrary> {
+export async function loadModelLods(raw: IAssetSource, level: IgiLevel, paths: IgiLevelPaths = level.paths ?? LEVEL1_PATHS): Promise<ModelLodLibrary> {
   const warnings: string[] = [];
   const payloads = new Map<string, { buffer: ArrayBuffer; textures: (string | null)[] }>();
   for (const archive of paths.archives) {

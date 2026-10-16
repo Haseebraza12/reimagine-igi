@@ -80,6 +80,16 @@ static analysis and recorded with their evidence in
 Output is not bit-identical to the PC game: WebGL is not Direct3D 7 and the
 browser mixes the sound. The data, parameters and logic are the game's own.
 
+**Missions.** The engine loads any mission from its own `mission.qvm`
+(DefineMission: level folder, location folder, name, picture). The supplied
+installation is the one-mission build: it has the files of mission 1
+(Trainyard) only, although `missions.res` names all 14. To play the others,
+point `npm run stage` at a complete, legally owned installation
+(`IGI_GAME_DIR=/path/to/IGI npm run stage`): it copies every
+`missions/locationN/levelM` folder it finds and lists them in
+`game-data/missions.json`, and they appear in Select Mission. Missions other
+than Trainyard have not been tested, because their files were not available.
+
 Not yet reproduced (see [docs/roadmap.md](docs/roadmap.md)):
 - the intro movies (Indeo 5 video) are skipped;
 - the credits text (compiled into igi.exe, which is not staged);
@@ -102,8 +112,11 @@ npm run stage        # copy the needed files from ../Game Files into game-data/
 npm run dev          # http://localhost:5173
 ```
 
-Open the page, go through the original main menu (**Select Mission** →
-**OK**) and **click** to capture the mouse. Esc breaks a cut-scene;
+Open the page and choose **Play Project IGI**. A dialog in the game's own
+style asks for **Story Mode** (the missions you have reached, as in the
+original) or **Free Mode** (every installed mission, to play in any order;
+finishing one there does not move the story on). Then **Select Mission** →
+**OK**, and **click** to capture the mouse. Esc breaks a cut-scene;
 otherwise it opens the pause menu.
 
 The keys are the game's own defaults, read from `config.qvm` (or from the

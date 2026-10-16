@@ -35,6 +35,8 @@ import { computeEye, createCameraController } from "./player/camera";
 import { createWeaponSystem } from "./combat/weapon";
 import { createEnemyManager } from "./combat/enemy";
 import { createIgiAudio, listenerFromMatrix } from "./audio/audio";
+import { LEVEL1_AUDIO_PATHS, LEVEL1_SOUND_FILES, audioPathsFor } from "./audio/igi-audio";
+import { LEVEL1_MISSION, levelPathsFor } from "../loaders";
 import { applyPerformanceFlags } from "./world/performance";
 import { allWeaponIds, noCheats, type CheatState } from "./cheats";
 import { createHud } from "./ui/hud";
@@ -49,7 +51,6 @@ import { loadLevel, missingRawFiles, type LoadedLevel } from "./level";
 import { TRI_BULLET, TRI_SIGHT } from "./world/collision";
 import { LookController } from "./look";
 import { readWeaponExtras } from "./combat/weapon-tags";
-import { LEVEL1_PATHS } from "../loaders";
 import { LEVEL_RNG_SEED, LevelRng } from "./ai/rng";
 
 export interface Game {
@@ -72,6 +73,8 @@ declare global {
       fire(down: boolean): void;
       /** The audio system (mixer, sound events) for inspection. */
       audio: ReturnType<typeof createIgiAudio>;
+      /** Unload the mission and load `id` again from scratch (the mission-switch path), then reset it. */
+      reloadMission(id?: number): Promise<void>;
     };
     /** ?menutest automation hook (the normal menu boot). */
     __igiMenu?: {
@@ -105,6 +108,10 @@ export function createGame(canvas: HTMLCanvasElement): Game {
 
   let stopped = false;
   let loaded: LoadedLevel | null = null;
+  /** The mission number `loaded` holds. */
+  let loadedMission: number | null = null;
+  /** Its audio files (MISSION:sounds directory and listing). */
+  let audioPaths = LEVEL1_AUDIO_PATHS;
   /** The mission is running (between hud.startMission() and quitting to the menu). */
   let missionActive = false;
 
@@ -271,7 +278,7 @@ export function createGame(canvas: HTMLCanvasElement): Game {
     autoHitTint: false,
     callbacks: {
       onSound: (name) => audio.playMenu(name),
-      onStartMission: () => void startMission(),
+      onStartMission: (id) => void startMission(id),
       onResume: () => setRunning(true),
       onRestart: () => void restartMission(),
       onQuit: () => quitToMenu(),
@@ -456,9 +463,17 @@ export function createGame(canvas: HTMLCanvasElement): Game {
   }
 
   /** Load the level once (original files) with loading-screen progress. */
-  async function ensureLoaded(onStep: () => void): Promise<void> {
-    if (loaded) return;
-    const missing = await missingRawFiles(raw);
+  /**
+   * Load mission `missionId` (its folders come from its DefineMission, ui/assets.ts), replacing
+   * another loaded mission first. Mission 1 when the menus have not listed it (?test, ?shot).
+   */
+  async function ensureLoaded(onStep: () => void, missionId = 1): Promise<void> {
+    if (loaded && loadedMission === missionId) return;
+    const info = hud.missionInfo(missionId);
+    const location = info?.location ?? (missionId === 1 ? LEVEL1_MISSION : null);
+    if (!location) throw new Error(`MISSION ${missionId} IS NOT INSTALLED\n\nIts files were not found in the staged game data.`);
+    const paths = levelPathsFor(location);
+    const missing = await missingRawFiles(raw, paths);
     if (missing.length) {
       throw new Error(
         "ORIGINAL GAME FILES NOT FOUND\n\nThis port reads your own Project I.G.I. installation.\n" +
@@ -466,16 +481,25 @@ export function createGame(canvas: HTMLCanvasElement): Game {
           `Missing: ${missing.join(", ")}`,
       );
     }
-    loaded = await loadLevel(ctx, raw, () => onStep());
+    if (loaded) {
+      // Another mission: its world, terrain, sky and arms go; the systems rebuild for the new level.
+      loaded.dispose();
+      loaded = null;
+      loadedMission = null;
+    }
+    loaded = await loadLevel(ctx, raw, () => onStep(), paths);
+    loadedMission = missionId;
+    // The mission's MISSION:sounds listing: the staging manifest's, else level 1's built-in list.
+    audioPaths = audioPathsFor(location.levelDir, info?.soundFiles ?? (missionId === 1 ? LEVEL1_SOUND_FILES : []));
     await damage.load(raw, ctx.level!, loaded.world);
     // Zoom tags / task types of weaponconfig.qvm (combat/weapon-tags.ts), and the arms bound to the view object.
-    weaponSystem.setWeaponExtras(readWeaponExtras(await raw.readBinary(LEVEL1_PATHS.weaponConfig)));
+    weaponSystem.setWeaponExtras(readWeaponExtras(await raw.readBinary(ctx.level!.paths.weaponConfig)));
     loaded.viewModels.bind(ctx.firstPerson ?? null);
     // Shell casings: ejected from the first-person gun body, drawn in the gun layer (fx/debris.ts).
     loaded.viewModels.addToGunLayer(effects.casingLayer);
     const viewModels = loaded.viewModels;
     weaponSystem.setGunMatrixSource(() => viewModels.gunMatrix());
-    await audio.load(raw, () => {});
+    await audio.load(raw, () => {}, { paths: audioPaths });
     onStep();
     // The selected profile's bindings (the menus start from config.qvm and may have remapped them).
     await hud.ready.catch(() => undefined);
@@ -499,12 +523,12 @@ export function createGame(canvas: HTMLCanvasElement): Game {
   }
 
   /** Select Mission -> OK: loading screen, load, then the mission (intro first). */
-  async function startMission(): Promise<void> {
+  async function startMission(missionId = 1): Promise<void> {
     let step = 0;
     setFrontEnd(false);
     hud.showLoading(0, LOAD_STEPS);
     try {
-      await ensureLoaded(() => hud.showLoading(Math.min(LOAD_STEPS - 1, ++step), LOAD_STEPS));
+      await ensureLoaded(() => hud.showLoading(Math.min(LOAD_STEPS - 1, ++step), LOAD_STEPS), missionId);
     } catch (error) {
       fail(error);
       return;
@@ -605,6 +629,13 @@ export function createGame(canvas: HTMLCanvasElement): Game {
           },
           fire: (down) => input.setFiring(down),
           audio,
+          reloadMission: async (id = 1) => {
+            setRunning(false);
+            missionActive = false;
+            loadedMission = -1; // forces ensureLoaded to dispose and load again
+            await ensureLoaded(() => {}, id);
+            resetMission();
+          },
         };
         return;
       }

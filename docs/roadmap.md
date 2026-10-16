@@ -2,7 +2,17 @@
 
 Goal: one original-looking mission running locally in a desktop browser from
 the player's own game files, then broader compatibility. The supplied
-installation contains only `missions/location0/level1` ("Trainyard").
+installation contains only `missions/location0/level1` ("Trainyard"): it is
+the one-mission build (its DefineMission has no next mission,
+MISSION_NEXT_MISSION_UNDEFINED, although missions.res names all 14).
+
+**Other missions** — engine ready, untested: every loader takes the mission's
+paths from its DefineMission (`levelPathsFor`, `audioPathsFor`; IgiLevel.paths),
+`npm run stage` stages every mission folder of an installation and writes
+`game-data/missions.json`, the menus list the staged missions, and the game
+unloads one mission before loading another (checked by unloading and
+reloading Trainyard: no leftover scene objects). Missions 2–14 need their
+original files; none were available here.
 
 Status legend: **done** (implemented from recovered rules and checked
 against data), **partial**, **open**. Every recovered value is listed in

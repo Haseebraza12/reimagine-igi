@@ -74,7 +74,7 @@ async function tryRead(source: IAssetSource, path: string): Promise<ArrayBuffer 
   }
 }
 
-export async function loadAiLevelData(source: IAssetSource, level: IgiLevel, paths: IgiLevelPaths = LEVEL1_PATHS): Promise<AiLevelData> {
+export async function loadAiLevelData(source: IAssetSource, level: IgiLevel, paths: IgiLevelPaths = level.paths ?? LEVEL1_PATHS): Promise<AiLevelData> {
   const warnings: string[] = [];
   const common = new Map<string, QvmProgram>();
   await Promise.all(COMMON_SCRIPTS.map(async (name) => {

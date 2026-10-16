@@ -45,6 +45,7 @@ export { IGI_UNITS_PER_METRE, igiPointToEngine, igiDirToEngine } from "./coords"
 export type {
   IgiLevel,
   IgiLevelPaths,
+  MissionLocation,
   LevelArea,
   LevelEnvironment,
   LevelInstance,
@@ -67,7 +68,7 @@ export type { TerrainLookInput, TerrainMaterialLevel, TerrainRenderMesh } from "
 export { TerrainLook, readTerrainBit, readTerrainLmp, NO_LIGHTMAP } from "./terrain-look";
 export type { HeightMapTask, TerrainMesh } from "./terrain-octree";
 export { TerrainOctree } from "./terrain-octree";
-export { LEVEL1_PATHS, loadIgiLevel, decodeLevelTexture } from "./level";
+export { LEVEL1_MISSION, LEVEL1_PATHS, levelPathsFor, loadIgiLevel, decodeLevelTexture } from "./level";
 export { createHttpAssetSource } from "./http-source";
 
 // Recovered subsystems (each module documents its evidence).
