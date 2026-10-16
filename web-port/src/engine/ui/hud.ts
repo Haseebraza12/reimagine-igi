@@ -30,6 +30,7 @@
  * errors such as missing game files.
  */
 import { CHEAT_MENU_TEXT, injectCheatMenu } from "./cheat-menu";
+import { PORT_README } from "./port-readme";
 import type { MissionInfo } from "./assets";
 import { MODE_MENU_TEXT, PLAY_MODE, injectModeDialog, type PlayMode } from "./mode-menu";
 import type { IAssetSource } from "../../contracts";
@@ -765,8 +766,9 @@ export function createHud(ctx: HudContext, options: HudOptions = {}): Hud {
     } catch {
       /* storage unavailable or unreadable: config.qvm defaults */
     }
-    const readme = (await tryRead("language/english/ReadMe.txt")) ?? (await tryRead("language/english/readme.txt"));
-    if (readme) readmeText = Array.from(new Uint8Array(readme), (c) => String.fromCharCode(c)).join("");
+    // "Read Me First!": igi.exe shows the installation's ReadMe.txt; the port shows its own note
+    // (ui/port-readme.ts: what the port is, the controls, the legal notice).
+    readmeText = PORT_README;
     // The Credits script lives in igi.exe itself (0x537cd8); it is only used when the host passes it in
     // (setCreditsScript, e.g. readExeCredits on the user's own executable). Without it the box stays empty.
   });

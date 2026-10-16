@@ -27,6 +27,8 @@ export interface ExeCreditLine {
 }
 
 export const CREDITS_TABLE_VA = 0x537cd8;
+/** The same table in the full game's IGI.exe (24 Nov 2000 build) [observed: entry 2's text pointer]. */
+export const CREDITS_TABLE_VA_FULL = 0x539c48;
 export const CREDITS_TABLE_COUNT = 0x82;
 
 interface Section {
@@ -73,24 +75,32 @@ export function readExeCredits(buffer: ArrayBuffer): ExeCreditLine[] {
     for (let i = o; i < view.byteLength && view.getUint8(i) !== 0 && out.length < 256; i++) out += String.fromCharCode(view.getUint8(i));
     return out;
   };
-  const table = off(CREDITS_TABLE_VA);
-  if (table === null || table + CREDITS_TABLE_COUNT * 36 > view.byteLength) throw new Error("igi.exe: credits table not found");
-  const out: ExeCreditLine[] = [];
-  for (let i = 0; i < CREDITS_TABLE_COUNT; i++) {
-    const o = table + i * 36;
-    const v = (k: number) => view.getInt32(o + 4 * k, true);
-    out.push({
-      x: v(0),
-      y: v(1),
-      colour: v(2),
-      font: v(3),
-      pause: v(4),
-      pageStart: v(5) !== 0,
-      localised: v(6) !== 0,
-      text: cstr(view.getUint32(o + 0x1c, true)),
-    });
-  }
-  // Sanity check of the build: page breaks have y = -1 and every font index is 0..3.
-  if (out.some((e) => e.font < 0 || e.font > 3) || !out.some((e) => e.y === -1)) throw new Error("igi.exe: unexpected credits table (other build?)");
+  const readTable = (table: number): ExeCreditLine[] => {
+    const out: ExeCreditLine[] = [];
+    for (let i = 0; i < CREDITS_TABLE_COUNT; i++) {
+      const o = table + i * 36;
+      const v = (k: number) => view.getInt32(o + 4 * k, true);
+      out.push({
+        x: v(0),
+        y: v(1),
+        colour: v(2),
+        font: v(3),
+        pause: v(4),
+        pageStart: v(5) !== 0,
+        localised: v(6) !== 0,
+        text: cstr(view.getUint32(o + 0x1c, true)),
+      });
+    }
+    return out;
+  };
+  /** The table at `va` when it looks like one: page breaks (y = -1), fonts 0..3, text on the first line. */
+  const read = (va: number): ExeCreditLine[] | null => {
+    const table = off(va);
+    if (table === null || table + CREDITS_TABLE_COUNT * 36 > view.byteLength) return null;
+    const lines = readTable(table);
+    return lines.some((e) => e.font < 0 || e.font > 3) || !lines.some((e) => e.y === -1) || !lines[0].text ? null : lines;
+  };
+  const out = read(CREDITS_TABLE_VA) ?? read(CREDITS_TABLE_VA_FULL);
+  if (!out) throw new Error("igi.exe: credits table not found (other build?)");
   return out;
 }

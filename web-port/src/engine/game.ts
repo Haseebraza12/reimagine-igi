@@ -40,6 +40,8 @@ import { LEVEL1_MISSION, levelPathsFor } from "../loaders";
 import { applyPerformanceFlags } from "./world/performance";
 import { allWeaponIds, noCheats, type CheatState } from "./cheats";
 import { createHud } from "./ui/hud";
+import { portCreditsScript } from "./ui/port-credits";
+import { readExeCredits } from "../loaders/exe-credits";
 import { createEffects } from "./fx/effects";
 import { createPickupRenderer } from "./render/pickups";
 import { createSmokeEmitters } from "./fx/smoke-emitter";
@@ -367,6 +369,21 @@ export function createGame(canvas: HTMLCanvasElement): Game {
       onAttract: () => hud.showMainMenu(),
     },
   });
+  // Credits: the port's own pages, then the original team's credits from the user's own igi.exe when
+  // it is staged (its table at 0x537cd8 / 0x539c48; nothing of it is part of the port).
+  hud.setCreditsScript(portCreditsScript(false));
+  void (async () => {
+    for (const name of ["igi.exe", "IGI.exe"]) {
+      try {
+        if (!(await raw.exists(name))) continue;
+        const original = readExeCredits(await raw.readBinary(name));
+        hud.setCreditsScript([...portCreditsScript(true), ...original]);
+        return;
+      } catch (error) {
+        console.info(`[credits] ${name}: ${(error as Error).message}`);
+      }
+    }
+  })();
   // The dead player's hand item drops where the hand is (FUN_004e9010 -> GunPickup, combat/pickups.ts).
   events.on("game:player-release-item", (payload) => {
     const weaponId = (payload as { weaponId?: string } | undefined)?.weaponId;

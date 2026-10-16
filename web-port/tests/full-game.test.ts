@@ -10,6 +10,8 @@ import { createFsAssetSource } from "../src/loaders/fs-source";
 import { LEVEL1_PATHS, levelPathsFor, loadIgiLevel, readIlffMembers, readQvmCallTree, readSoundDefinitions } from "../src/loaders";
 import { AI_GRAPH_MAGIC, aiGraphNodeWorld, readAiGraph } from "../src/loaders/ai-graph";
 import { loadAiLevelData } from "../src/engine/ai/data";
+import { readExeCredits } from "../src/loaders/exe-credits";
+import { portCreditsScript } from "../src/engine/ui/port-credits";
 import { numberParam, vec3Param } from "../src/loaders/tasks";
 import { readAnyFont } from "../src/loaders/ui";
 import { readMissionDefinition } from "../src/engine/ui/assets";
@@ -113,6 +115,20 @@ describe.skipIf(!haveFull)("full game data", () => {
     // Graphs under Container / ConditionalContainer stay unattached.
     expect([...data.graphs.values()].some((x) => !x.position.parent)).toBe(true);
   }, 60_000);
+
+  it.skipIf(!existsSync(`${FULL}/igi.exe`))("credits: the full game's IGI.exe keeps the 130-line table at 0x539c48; the port's pages come first", () => {
+    const lines = readExeCredits(bytes(`${FULL}/igi.exe`));
+    expect(lines.length).toBe(130);
+    expect(lines.slice(0, 3).map((l) => l.text)).toEqual(["Innerloop", "Game Concept", "Andrew Wensley"]);
+    const script = [...portCreditsScript(true), ...lines];
+    expect(script[0].text).toBe("Project IGI - Web Port");
+    expect(script.map((l) => l.text)).toContain("Haseeb ur Rehman");
+    expect(script.map((l) => l.text)).toContain("munibhaseeb2@gmail.com");
+    // Every page ends with a break (y -1, pause -1) and starts with a page-start line.
+    const breaks = script.filter((l) => l.y === -1);
+    expect(breaks.every((l) => l.pause === -1)).toBe(true);
+    expect(script.filter((l) => l.pageStart).length).toBe(breaks.length);
+  });
 
   it("DiscardTerrain: no collision terrain is left inside a discard cube (mission 3)", async () => {
     const raw = createFsAssetSource(FULL);

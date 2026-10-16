@@ -1,6 +1,6 @@
 # re-igi
 
-**Project I.G.I. in a web browser: a hobby project by Haseeb ur Rehman.**
+**Project I.G.I. in a web browser: a hobby project by Haseeb ur Rehman (CS graduate, munibhaseeb2@gmail.com).**
 
 Research toward a desktop-browser reimplementation of Project I.G.I., using the
 owner's installation as the reference. The aim is to preserve the original
@@ -104,7 +104,6 @@ one-mission installation shows the others as "Mission Not Installed".
 
 Not yet reproduced (see [docs/roadmap.md](docs/roadmap.md)):
 - the intro movies (Indeo 5 video) are skipped;
-- the credits text (compiled into igi.exe, which is not staged);
 - a few details listed under "Open" in the docs above (for example the
   drawer's collision);
 - nothing has been compared frame by frame with the running original.
@@ -180,6 +179,13 @@ switch it on; a change applies when you press OK (Cancel discards it).
 The original igi.exe has one hidden cheat of its own, the command-line word
 `UnlimitedAmmo` (the clip still empties, but reloads are free). See
 [docs/weapons-view.md](docs/weapons-view.md).
+
+**Read Me** and **Credits** on the main menu are the port's own: the Read Me
+box explains the project (a hobby showcase, not a distribution; all rights to
+the game belong to its owners), and the Credits name the port's author before
+the original team, whose credits are read from your own `igi.exe` when `npm
+run stage` finds it in the installation (it stays in the gitignored
+`game-data/`).
 
 Settings made in the menus (profiles, controls, volumes, resolution,
 performance level, cheats) are kept in this browser's storage, as igi.exe keeps them
