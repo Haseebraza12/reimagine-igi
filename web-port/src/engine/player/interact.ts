@@ -39,10 +39,10 @@
  *     pickable door; the stance in front of the door, FUN_00473b30, is not
  *     ported.)
  */
+import { gameAssetSource } from "../asset-source";
 import type { IAssetSource, Vec3 } from "../../contracts";
 import {
   LEVEL1_PATHS,
-  createHttpAssetSource,
   doorPose,
   eulerToMatrix,
   readAnimations,
@@ -312,7 +312,7 @@ export interface InteractionController {
 }
 
 export function createInteractions(ctx: GameContext, options: InteractionOptions = {}): InteractionController {
-  const source = options.source ?? createHttpAssetSource("/raw/");
+  const source = options.source ?? gameAssetSource();
   let models: Map<string, ModelInfo> | null = null;
   let loadedFor: IgiLevel | null = null;
   let loading: Promise<void> | null = null;

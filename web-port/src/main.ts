@@ -3,8 +3,29 @@
  * errors to the HUD overlay so a blank page is never silent.
  */
 import { createGame } from "./engine/game";
+import { gameAssetSource, setGameAssetSource } from "./engine/asset-source";
+import { pickGameFolder } from "./engine/ui/folder-picker";
 
-function boot(): void {
+/**
+ * The dev / preview servers serve the staged files at /raw/ (vite.config.ts); a static host
+ * (Vercel) has none, so the player opens their own installation folder first.
+ */
+async function chooseSource(): Promise<void> {
+  try {
+    const r = await fetch("/raw/menusystem/mainmenu.qvm", { method: "HEAD" });
+    const type = r.headers.get("content-type") ?? "";
+    if (r.ok && !type.includes("text/html")) {
+      gameAssetSource();
+      return;
+    }
+  } catch {
+    /* no server-side game files */
+  }
+  setGameAssetSource(await pickGameFolder());
+}
+
+async function boot(): Promise<void> {
+  await chooseSource();
   const app = document.getElementById("app");
   if (!app) throw new Error("missing #app container");
 
@@ -28,7 +49,7 @@ function boot(): void {
 }
 
 if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", boot);
+  document.addEventListener("DOMContentLoaded", () => void boot());
 } else {
-  boot();
+  void boot();
 }

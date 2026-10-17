@@ -919,7 +919,7 @@ tests `tests/ui-widgets.test.ts`.
 | main | 913 Read Me | AsciiBox "LANGUAGE:readme.txt" 430 × 276, font4 (the port shows its own text, ui/port-readme.ts) |
 | main | 914 Select Mission | (section 10) |
 | main | 915 Content Control | ToggleBox Blood Enabled, InputBox password (hidden) |
-| main | 916 Credits | TypeWriterBox 610 × 270 (the port's pages, ui/port-credits.ts, then igi.exe's table, E200) |
+| main | 916 Credits | TypeWriterBox 610 × 270 (the port: 430 × 276 like Read Me, its own pages, ui/port-credits.ts, E200) |
 | in-game | 902 Sound, 903 Controls | as 906 / 907 (sizes 140); OK = PopScreen(TRUE) |
 | in-game | 901 Graphics | not reachable from 900 |
 

@@ -156,17 +156,6 @@ async function main() {
       manifest.missions.push({ script: `missions/${loc.name}/${lvl.name}/mission.qvm`.toLowerCase(), sounds });
     }
   }
-  // The installation's own igi.exe, read only for the Credits screen's original-team table
-  // (src/loaders/exe-credits.ts); optional, staged as game-data/igi.exe.
-  const exe = (await readdir(source).catch(() => [])).find((f) => f.toLowerCase() === "igi.exe");
-  if (exe) {
-    const to = join(target, "igi.exe");
-    await copyFile(join(source, exe), to);
-    const [a, b] = await Promise.all([readFile(join(source, exe)), readFile(to)]);
-    if (!a.equals(b)) throw new Error(`verification failed for ${exe}`);
-    copied++;
-    bytes += a.length;
-  }
   manifest.missions.sort((a, b) => a.script.localeCompare(b.script, "en", { numeric: true }));
   await writeFile(join(target, "missions.json"), JSON.stringify(manifest, null, 1) + "\n");
   console.log(`Missions found: ${manifest.missions.length} (${manifest.missions.map((m) => m.script.replace(/^missions\//, "").replace(/\/mission\.qvm$/, "")).join(", ")})`);

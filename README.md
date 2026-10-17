@@ -182,16 +182,26 @@ The original igi.exe has one hidden cheat of its own, the command-line word
 
 **Read Me** and **Credits** on the main menu are the port's own: the Read Me
 box explains the project (a hobby showcase, not a distribution; all rights to
-the game belong to its owners), and the Credits name the port's author before
-the original team, whose credits are read from your own `igi.exe` when `npm
-run stage` finds it in the installation (it stays in the gitignored
-`game-data/`).
+the game belong to its owners), and the Credits name the web port's author,
+with the rights holders of the game on the last page. The Credits box has the
+Read Me box's size, inside its window (the shipped layout made it wider than
+the window).
 
 Settings made in the menus (profiles, controls, volumes, resolution,
 performance level, cheats) are kept in this browser's storage, as igi.exe keeps them
 in `config.qsc`; clearing the site data restores the shipped `config.qvm`
 defaults. The menus play `menu_music` from the menu sound archive once the
 page has had a click or key press (browsers block audio before that).
+
+**Deploying (Vercel or any static host).** `web-port/vercel.json` builds the
+site with `npm run build` into `dist/` (about 1.4 MB: the port's code only, no
+game files). Import the repository in Vercel with **Root Directory
+`web-port`**, or run `npx vercel` inside `web-port/`. On a host without the
+staged `/raw/` files, the site opens with a start screen: each player opens
+the folder of their own Project I.G.I. installation, and the game reads it
+from their disk (nothing is uploaded). Chrome and Edge remember the folder
+between visits; other browsers ask for it each time. Do not upload
+`game-data/` to the host: that would distribute the game.
 
 Checks and build:
 

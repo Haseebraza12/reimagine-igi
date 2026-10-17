@@ -29,12 +29,14 @@
  * The non-original #overlay text (showOverlay) is kept only for port-level
  * errors such as missing game files.
  */
+import { gameAssetSource } from "../asset-source";
 import { CHEAT_MENU_TEXT, injectCheatMenu } from "./cheat-menu";
 import { PORT_README } from "./port-readme";
+import { fitCreditsScreen, portCreditsScript } from "./port-credits";
 import type { MissionInfo } from "./assets";
 import { MODE_MENU_TEXT, PLAY_MODE, injectModeDialog, type PlayMode } from "./mode-menu";
 import type { IAssetSource } from "../../contracts";
-import { createHttpAssetSource, type UiFont } from "../../loaders";
+import type { UiFont } from "../../loaders";
 import type { GameContext } from "../context";
 import { GameEvent, type StatusMessagePayload } from "../events";
 import { loadUiAssets, type UiAssets, type WeaponHudInfo } from "./assets";
@@ -265,7 +267,7 @@ export function createHud(ctx: HudContext, options: HudOptions = {}): Hud {
   const callbacks = options.callbacks ?? {};
   const random = options.random ?? Math.random;
   const usa = options.usa ?? false;
-  const source = options.source ?? createHttpAssetSource("/raw/");
+  const source = options.source ?? gameAssetSource();
   const hasDom = typeof document !== "undefined";
 
   let assets: UiAssets | null = null;
@@ -734,6 +736,8 @@ export function createHud(ctx: HudContext, options: HudOptions = {}): Hud {
     if (!injectCheatMenu(a.mainMenu, "main")) console.warn("[ui] main menu: no place for the Cheats entry");
     // Port addition: "Play Project IGI" asks for Story Mode / Free Mode first (ui/mode-menu.ts).
     if (!injectModeDialog(a.mainMenu)) console.warn("[ui] main menu: no place for the mode dialog");
+    if (!fitCreditsScreen(a.mainMenu)) console.warn("[ui] main menu: Credits screen not found");
+    credits = portCreditsScript();
     if (!injectCheatMenu(a.ingameMenu, "ingame")) console.warn("[ui] in-game menu: no place for the Cheats entry");
     if (disposed) return;
     assets = a;
@@ -769,8 +773,6 @@ export function createHud(ctx: HudContext, options: HudOptions = {}): Hud {
     // "Read Me First!": igi.exe shows the installation's ReadMe.txt; the port shows its own note
     // (ui/port-readme.ts: what the port is, the controls, the legal notice).
     readmeText = PORT_README;
-    // The Credits script lives in igi.exe itself (0x537cd8); it is only used when the host passes it in
-    // (setCreditsScript, e.g. readExeCredits on the user's own executable). Without it the box stays empty.
   });
   ready.catch((error) => console.error("[hud] UI files failed to load:", error));
 

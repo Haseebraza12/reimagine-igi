@@ -64,6 +64,7 @@
  *     and ground probe each tick; airborne soldiers fall with the player's
  *     gravity (the AI fall handling was not traced).
  */
+import { gameAssetSource } from "../asset-source";
 import * as THREE from "three";
 import type { IAssetSource, Vec3 } from "../../contracts";
 import {
@@ -73,7 +74,6 @@ import {
   GRAVITY_UNITS_PER_TICK2,
   HIT_ZONE,
   PLAYER_DIFFICULTY_DAMAGE,
-  createHttpAssetSource,
   aiBulletMayHitPlayer,
   x87F32Add,
   x87StoreF32,
@@ -272,7 +272,7 @@ export interface EnemyManagerOptions {
 
 export function createEnemyManager(ctx: GameContext, options: EnemyManagerOptions = {}): EnemyManager {
   const raycaster = new THREE.Raycaster();
-  const source = options.source ?? createHttpAssetSource("/raw/");
+  const source = options.source ?? gameAssetSource();
   let assets: SoldierAssets | null = null;
   let soldiers: SoldierRuntime[] = [];
   const byId = new Map<number, SoldierRuntime>();

@@ -109,9 +109,8 @@ Gaps (documented in code and in the documents above):
 
 - the intro movies (Indeo 5) are skipped: playing them needs a decoder
   decision (see README);
-- the Credits screen shows the port's own pages, then the original team's
-  credits read from the player's own igi.exe when `npm run stage` stages it
-  (E200); the Read Me box shows the port's own text;
+- the Credits screen shows the web port's own pages and the Read Me box the
+  port's own text (E200), not the shipped credits table and ReadMe.txt;
 - of the Graphics menu's performance flags (applied at every level load,
   `FUN_00405e50`, engine/world/performance.ts) the terrain threshold and the
   model LOD scale are applied; bits 1 / 2 (a device callback) and 4 / 8 (two
