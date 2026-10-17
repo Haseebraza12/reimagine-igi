@@ -6,7 +6,8 @@
   "description": "Project I.G.I. browser-native vertical slice (hobby reimplementation, original assets never redistributed)",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && npm run bundle:raw",
+    "bundle:raw": "node scripts/bundle-raw.mjs",
     "preview": "vite preview",
     "check": "tsc --noEmit -p .",
     "test": "vitest run",
