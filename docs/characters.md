@@ -658,6 +658,13 @@ FUN_00464490 (eye), FUN_00463470 (view angles), FUN_0040f5a0/0040fc60/
   52/55 (0.1 cm). During the MP5SD reload bone 52 leaves with the left hand
   (0.67–1.0 s) and bone 55 is pulled back (2.33 s). The attaching code
   itself was not found (inferred).
+- **Second gun (Uzi ×2)**: 111_04_1 carries the left Uzi 111_05_1 as an ATTA
+  part with its own GUNFLAME (ATTA offset (0, −0.154, 0.085) m: the pickup /
+  third-person pair). In first person it sits on bone 52, identity offset, its
+  flame keeping its offset from it. Observed: in clips 70–74 bone 52 keeps
+  bone 3's orientation (≤ 1° apart) at the left hand, (−728, 1398, −289)
+  against bone 3's (699, 1388, −300); in the reload (75) it mirrors bone 3;
+  111_04_1 has no GunClip on bone 52 (inferred binding, as above).
 
 ## Textures (level 1)
 

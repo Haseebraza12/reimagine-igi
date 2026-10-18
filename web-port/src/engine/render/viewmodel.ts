@@ -24,7 +24,9 @@
  *     additive (ONE/ONE, unlit).
  * Observed fit, not located in code (inferred): gun body on arms bone 3,
  * magazine (GUNCLIP) on bone 52, moving part (GUNMOVINGPART) on bone 55,
- * identity offsets.
+ * identity offsets; a second gun (the Uzi x2's left Uzi: the body's ATTA part
+ * with its own GUNFLAME) on bone 52, its own attachments (flame) keeping their
+ * offsets from it.
  *
  * Bound to the player's view object (bind(ctx.firstPerson)), the arms show
  * exactly what igi.exe's weapon state machine plays (combat/weapon.ts,
@@ -239,7 +241,19 @@ export function createViewModels(level: IgiLevel, _sun?: unknown, _ambient?: unk
   interface GunMesh {
     part: LevelGunPart;
     mesh: THREE.Mesh;
+    /** The part's index in the weapon's part list. */
+    index: number;
   }
+  /** A weapon's second gun: the part carrying its own GUNFLAME (Uzi x2), and its gun-local matrix inverted. */
+  interface SecondGun {
+    index: number;
+    inverse: THREE.Matrix4;
+    /** Per part: carried by the second gun (itself or an attachment of it). */
+    carried: boolean[];
+    /** Indices (among the GUNFLAME parts, the muzzle flash's order) of the flames it carries. */
+    flames: number[];
+  }
+  const secondGuns = new Map<string, SecondGun>();
   const guns = new Map<string, GunMesh[]>();
   const bodyMeshes = new Map<string, THREE.Mesh>();
   /** Muzzle flash per weapon (GUNFLAME parts, additive; none for the MP5SD), carried by the gun body's frame. */
@@ -257,7 +271,21 @@ export function createViewModels(level: IgiLevel, _sun?: unknown, _ambient?: unk
       disposables.push(flash);
     }
     const meshes: GunMesh[] = [];
-    for (const part of parts) {
+    const second = parts.findIndex((p, i) => p.role === "part" && parts.some((q) => q.role === "flame" && q.parent === i));
+    if (second > 0) {
+      const carried = parts.map((_, i) => {
+        for (let j = i; j >= 0; j = parts[j].parent) if (j === second) return true;
+        return false;
+      });
+      const flames = parts.filter((p) => p.role === "flame").map((p) => carried[parts.indexOf(p)]);
+      secondGuns.set(weaponId, {
+        index: second,
+        inverse: new THREE.Matrix4().fromArray(parts[second].matrix).invert(),
+        carried,
+        flames: flames.flatMap((c, k) => (c ? [k] : [])),
+      });
+    }
+    for (const [index, part] of parts.entries()) {
       if (part.role === "flame") continue; // muzzle flash: drawn by the effects module
       const model = level.models.get(part.model);
       if (!model) continue;
@@ -276,7 +304,7 @@ export function createViewModels(level: IgiLevel, _sun?: unknown, _ambient?: unk
       mesh.frustumCulled = false;
       mesh.visible = false;
       holder.add(mesh);
-      meshes.push({ part, mesh });
+      meshes.push({ part, mesh, index });
       if (part.role === "body") bodyMeshes.set(weaponId, mesh);
     }
     guns.set(weaponId, meshes);
@@ -288,6 +316,9 @@ export function createViewModels(level: IgiLevel, _sun?: unknown, _ambient?: unk
   const boneMatrix = new THREE.Matrix4();
   const partMatrix = new THREE.Matrix4();
   const rootOffset = new THREE.Matrix4();
+  const secondFrame = new THREE.Matrix4();
+  const flameCarrier = new THREE.Matrix4();
+  const bodyInverse = new THREE.Matrix4();
   let weapon: string | null = null;
   let clip: AnimClip | null = null;
   let clipTicks = 0;
@@ -348,13 +379,31 @@ export function createViewModels(level: IgiLevel, _sun?: unknown, _ambient?: unk
     // Gun parts on their bones.
     rootOffset.makeTranslation(root[0], root[1], root[2]);
     if (bound && bound.handWeapon !== weapon) showWeapon(bound.handWeapon);
-    for (const { part, mesh } of guns.get(weapon ?? "") ?? []) {
+    const second = secondGuns.get(weapon ?? "");
+    if (second) {
+      boneMatrix.fromArray(bones, 16 * FIRST_PERSON.secondGunBone);
+      secondFrame.copy(conv).multiply(rootOffset).multiply(boneMatrix).multiply(convInv);
+    }
+    for (const { part, mesh, index } of guns.get(weapon ?? "") ?? []) {
+      if (second?.carried[index]) {
+        // The second gun on its bone (identity offset); its attachments keep their offsets from it.
+        mesh.matrix.copy(secondFrame);
+        if (index !== second.index) mesh.matrix.multiply(second.inverse).multiply(new THREE.Matrix4().fromArray(part.matrix));
+        continue;
+      }
       const bone = part.role === "clip" ? FIRST_PERSON.magazineBone : part.role === "moving" ? FIRST_PERSON.movingPartBone : FIRST_PERSON.gunBone;
       boneMatrix.fromArray(bones, 16 * bone);
       partMatrix.copy(conv).multiply(rootOffset).multiply(boneMatrix).multiply(convInv);
       // Body/clip/moving parts sit on their bones with identity offsets; other parts keep their ATTA offset from the body.
       if (part.role === "part") partMatrix.multiply(new THREE.Matrix4().fromArray(part.matrix));
       mesh.matrix.copy(partMatrix);
+    }
+    // The flash rides the body; the second gun's flames are carried to the second gun (body^-1 x frame x gun^-1).
+    const f = weapon ? flashes.get(weapon) : undefined;
+    const body = weapon ? bodyMeshes.get(weapon) : undefined;
+    if (second && f && body) {
+      flameCarrier.copy(bodyInverse.copy(body.matrix).invert()).multiply(secondFrame).multiply(second.inverse);
+      for (const k of second.flames) f.flash.setCarrier(k, flameCarrier);
     }
   };
 

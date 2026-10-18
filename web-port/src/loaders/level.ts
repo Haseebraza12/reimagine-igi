@@ -353,6 +353,8 @@ export interface LevelGunPart {
   model: string;
   /** body = the Gun Model itself; clip = TASKTYPE_GUNCLIP; moving = TASKTYPE_GUNMOVINGPART; flame = TASKTYPE_GUNFLAME; part = other attachment. */
   role: "body" | "clip" | "moving" | "flame" | "part";
+  /** Index (in the weapon's part list) of the model this part is an ATTA attachment of; -1 for the body. */
+  parent: number;
   /** Column-major 4x4, gun-local (ATTA offsets applied). */
   matrix: number[];
   /**
@@ -1515,13 +1517,15 @@ export async function loadIgiLevel(raw: IAssetSource, paths: IgiLevelPaths = LEV
     const gun = weaponTable.get(id)?.gunModel;
     if (!gun || !modelPayloads.has(gun)) continue;
     const parts: LevelGunPart[] = [];
-    const collect = (model: string, position: Vec3, rotation: Mat3, depth: number, role: LevelGunPart["role"]) => {
+    const collect = (model: string, position: Vec3, rotation: Mat3, depth: number, role: LevelGunPart["role"], parent: number) => {
       const geometry = mef(model);
       if (!geometry || EDITOR_MARKER_MODELS.has(model)) return;
       addModel(model);
+      const index = parts.length;
       parts.push({
         model,
         role,
+        parent,
         matrix: engineMatrix4(igiRotationToEngine(rotation), igiDirToEngine(position).map((v) => v / IGI_UNITS_PER_METRE) as Vec3),
         blocks: geometry.groups.map((g) => ({ deferred: g.deferredFlag !== 0, additive: (g.blendFlags & 1) !== 0 })),
       });
@@ -1536,10 +1540,11 @@ export async function loadIgiLevel(raw: IAssetSource, paths: IgiLevelPaths = LEV
           mulMat3(rotation, transposeMat3(a.matrix as Mat3)),
           depth + 1,
           (type && ROLE[type]) || "part",
+          index,
         );
       }
     };
-    collect(gun, [0, 0, 0], IDENTITY3, 0, "body");
+    collect(gun, [0, 0, 0], IDENTITY3, 0, "body", -1);
     guns.set(id, parts);
   }
 

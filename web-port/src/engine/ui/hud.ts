@@ -33,6 +33,7 @@ import { gameAssetSource } from "../asset-source";
 import { CHEAT_MENU_TEXT, injectCheatMenu } from "./cheat-menu";
 import { PORT_README } from "./port-readme";
 import { fitCreditsScreen, portCreditsScript } from "./port-credits";
+import { setFaviconFromPicture } from "./favicon";
 import type { MissionInfo } from "./assets";
 import { MODE_MENU_TEXT, PLAY_MODE, injectModeDialog, type PlayMode } from "./mode-menu";
 import type { IAssetSource } from "../../contracts";
@@ -741,6 +742,9 @@ export function createHud(ctx: HudContext, options: HudOptions = {}): Hud {
     if (!injectCheatMenu(a.ingameMenu, "ingame")) console.warn("[ui] in-game menu: no place for the Cheats entry");
     if (disposed) return;
     assets = a;
+    // Port addition: the tab icon is the main menu's logo (ui/favicon.ts).
+    const logo = a.main.pictures.get(usa ? "logo_us.pic" : "logo.pic");
+    if (logo) setFaviconFromPicture(logo);
     const hudFont = a.computer.fonts.get("font3.fnt");
     const radioFont = a.ingame.fonts.get("font1.fnt");
     const cutsceneFont = a.ingame.fonts.get("font4.fnt");

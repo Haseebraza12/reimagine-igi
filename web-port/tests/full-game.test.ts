@@ -7,7 +7,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { createFsAssetSource } from "../src/loaders/fs-source";
-import { LEVEL1_PATHS, levelPathsFor, loadIgiLevel, readIlffMembers, readQvmCallTree, readSoundDefinitions } from "../src/loaders";
+import { FIRST_PERSON, LEVEL1_PATHS, levelPathsFor, loadIgiLevel, poseSkeleton, readAnimations, readIlffMembers, readQvmCallTree, readSoundDefinitions, sampleClip } from "../src/loaders";
 import { AI_GRAPH_MAGIC, aiGraphNodeWorld, readAiGraph } from "../src/loaders/ai-graph";
 import { loadAiLevelData } from "../src/engine/ai/data";
 import { fitCreditsScreen, portCreditsScript } from "../src/engine/ui/port-credits";
@@ -97,6 +97,28 @@ describe.skipIf(!haveFull)("full game data", () => {
     }
     expect(legacy).toBe(7);
   });
+
+  it("Uzi x2: the second Uzi (111_05_1) is the body's ATTA part with its own GUNFLAME; the arms hold it on bone 52", async () => {
+    const raw = createFsAssetSource(FULL);
+    const [def] = readMissionDefinition(bytes(`${FULL}/missions/location0/level11/mission.qvm`), new Map());
+    const level = await loadIgiLevel(raw, levelPathsFor(def.location));
+    const parts = level.guns.get("WEAPON_ID_UZIX2")!;
+    expect(parts.map((p) => `${p.model}:${p.role}:${p.parent}`)).toEqual(["111_04_1:body:-1", "1005_01_1:flame:0", "111_05_1:part:0", "1005_01_1:flame:2"]);
+    // The Colt's ATTA parts carry no flame: they stay on the gun body.
+    const colt = level.guns.get("WEAPON_ID_COLT");
+    if (colt) for (const [i, p] of colt.entries()) if (p.role === "part") expect(colt.some((q) => q.role === "flame" && q.parent === i)).toBe(false);
+    // Stand / move / fire clips 70-74: bone 52 holds bone 3's orientation at the left hand.
+    const anim = readAnimations(bytes(`${FULL}/common/anims/005.iff`));
+    for (const id of [70, 71, 72, 73, 74]) {
+      const clip = anim.clips.get(id)!;
+      const m = poseSkeleton(anim.skeleton, sampleClip(clip, clip.duration).rotations);
+      const b3 = 16 * FIRST_PERSON.gunBone;
+      const b2 = 16 * FIRST_PERSON.secondGunBone;
+      for (let k = 0; k < 11; k++) if (k % 4 !== 3) expect(Math.abs(m[b2 + k] - m[b3 + k])).toBeLessThan(0.02);
+      expect(m[b3 + 12]).toBeGreaterThan(500);
+      expect(m[b2 + 12]).toBeLessThan(-500);
+    }
+  }, 60_000);
 
   it("L14 AIGraph 36 is attached to Building_-1: its one node sits under Anya's desk position (E199)", async () => {
     const raw = createFsAssetSource(FULL);

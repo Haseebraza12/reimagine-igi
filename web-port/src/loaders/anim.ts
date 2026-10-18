@@ -526,6 +526,11 @@ export const HUMAN_SOLDIER_ACTIONS: readonly ActionAnim[] = [
  * slide-bolt-pump ATTA offsets from bone 3 for most guns; the attaching code
  * was not located, so the binding itself is inferred]: gun body = bone 3,
  * magazine (GunClip) = bone 52, moving part = bone 55, identity offsets.
+ * Second gun (Uzi x2: 111_05_1, the body's ATTA part that carries its own
+ * GUNFLAME) = bone 52 [observed: in clips 70-75 bone 52 holds bone 3's
+ * orientation (0.0-1.0 deg apart; mirrored during the reload) at the left
+ * hand, (-728, 1398, -289) against bone 3's (699, 1388, -300); the gun has no
+ * GunClip; binding inferred, as for the others].
  */
 export const FIRST_PERSON = {
   model: "005_01_1",
@@ -536,6 +541,8 @@ export const FIRST_PERSON = {
   gunBone: 3,
   magazineBone: 52,
   movingPartBone: 55,
+  /** The second gun of a two-gun weapon (Uzi x2): left hand. */
+  secondGunBone: 52,
 } as const;
 
 /** Third-person soldiers: gun model on bone 22 of the 33-bone skeletons (observed fit, inferred). */

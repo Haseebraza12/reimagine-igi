@@ -42,6 +42,12 @@ export interface MuzzleFlash {
   update(): void;
   /** Hide immediately and forget the firing sequence (weapon switch, reset). */
   reset(): void;
+  /**
+   * Place flame `index` (the weapon's GUNFLAME parts in order) by `carrier` x its gun-local
+   * transform: the first-person Uzi x2 carries its second gun's flame on another bone.
+   * Null = gun-local (the default).
+   */
+  setCarrier(index: number, carrier: THREE.Matrix4 | null): void;
   dispose(): void;
 }
 
@@ -146,7 +152,7 @@ export function createMuzzleFlash(level: IgiLevel, weaponId: string, mipBias?: T
   const root = new THREE.Group();
   root.name = `muzzle-flash:${weaponId}`;
   root.visible = false;
-  const holders: Array<{ holder: THREE.Object3D; position: THREE.Vector3; rotation: THREE.Quaternion }> = [];
+  const holders: Array<{ holder: THREE.Object3D; position: THREE.Vector3; rotation: THREE.Quaternion; carrier: THREE.Matrix4 | null }> = [];
   const disposables: Array<{ dispose(): void }> = [];
   for (const part of flames) {
     const m = new THREE.Matrix4().fromArray(part.matrix);
@@ -160,7 +166,7 @@ export function createMuzzleFlash(level: IgiLevel, weaponId: string, mipBias?: T
     holder.add(mesh);
     disposables.push(mesh.geometry, ...(mesh.material as THREE.Material[]));
     root.add(holder);
-    holders.push({ holder, position, rotation });
+    holders.push({ holder, position, rotation, carrier: null });
   }
   const sequence = new FlashSequence();
   const q = new THREE.Quaternion();
@@ -175,12 +181,17 @@ export function createMuzzleFlash(level: IgiLevel, weaponId: string, mipBias?: T
       for (const h of holders) {
         // Roll about the barrel axis through the flame's attachment point: T(p) Rroll Rpart.
         h.holder.matrix.compose(h.position, q.clone().multiply(h.rotation), one);
+        if (h.carrier) h.holder.matrix.premultiply(h.carrier);
         h.holder.matrixWorldNeedsUpdate = true;
       }
     },
     reset() {
       sequence.reset();
       root.visible = false;
+    },
+    setCarrier(index, carrier) {
+      const h = holders[index];
+      if (h) h.carrier = carrier ? (h.carrier ?? new THREE.Matrix4()).copy(carrier) : null;
     },
     dispose() {
       root.removeFromParent();
