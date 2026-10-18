@@ -415,6 +415,18 @@ export class SoundMixer {
     this.stats.voices = this.voices.size;
   }
 
+  /**
+   * Menus (no game tick): free the fire-and-forget voices that ended, as housekeeping does for them.
+   * Instance voices are left alone (they are not refreshed while the world stands still).
+   */
+  releaseFinished(): void {
+    const backend = this.backend;
+    for (const v of [...this.voices]) {
+      if (v.fireAndForget && !v.loop && (!backend || !backend.isPlaying(v.backend))) this.stopVoice(v);
+    }
+    this.stats.voices = this.voices.size;
+  }
+
   /** Stop every voice and destroy every instance (FUN_004ddcf0 + level teardown). */
   stopAll(): void {
     for (const inst of this.instances) inst.destroyed = true;

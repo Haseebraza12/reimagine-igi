@@ -74,6 +74,8 @@ export interface IgiAudioSystem extends AudioManager {
   readonly data: IgiAudioData | null;
   /** One 30 Hz game tick with the microphone (camera) in engine space. */
   tick(listener: AudioListener): void;
+  /** A frame tick while the world stands still (menus): frees the menu sounds that ended. */
+  tickMenu(): void;
   /** Suspend / resume the output (pause menu). */
   setPaused(paused: boolean): void;
   /** Mission restart: stop everything, clear gates, limiters, ambience and cut-scene sound state. */
@@ -234,6 +236,11 @@ export function createIgiAudio(host: AudioHostContext, options: IgiAudioOptions 
       events.tick();
       ambience?.tick(listener);
       mixer.tick(listener);
+    },
+
+    tickMenu() {
+      if (disposed) return;
+      mixer.releaseFinished();
     },
 
     setPaused(on) {

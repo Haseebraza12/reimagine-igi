@@ -884,6 +884,8 @@ export function createGame(canvas: HTMLCanvasElement): Game {
         audio.tick(listenerFromMatrix(camera.matrixWorld.elements));
         ctx.tick++;
       }
+      // Menus: the clicks' voices are freed here (the mixer tick above runs only with the world).
+      if (!running) audio.tickMenu();
       hud.tick(running);
       effects.update(TICK_SECONDS, running);
       // Key presses are kept until a tick has seen them.

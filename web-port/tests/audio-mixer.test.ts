@@ -184,6 +184,24 @@ describe("audio mixer: per-tick voice parameters", () => {
     expect(mixer.stats.peakVoices).toBe(32);
   });
 
+  it("frees ended raw (menu) voices without a game tick, so clicks never run out of voices", () => {
+    const { mixer, backend, reg } = setup([sample("menu_high", 0.1)], []);
+    for (let i = 0; i < 100; i++) {
+      expect(mixer.playRaw("menu_high", 1, reg)).toBe(true);
+      backend.recs[backend.recs.length - 1].ended = true;
+      mixer.releaseFinished();
+    }
+    expect(mixer.voiceCount).toBe(0);
+    expect(mixer.stats.dropped).toBe(0);
+    // Instance voices (no refresh while the world stands still) are kept.
+    const { mixer: m2, backend: b2 } = setup([sample("hum", 5)], [def("hum", "hum", { loop: true })]);
+    m2.spawn("hum", { positional: false });
+    m2.tick(listenerAt(0));
+    m2.releaseFinished();
+    m2.releaseFinished();
+    expect(b2.live()).toHaveLength(1);
+  });
+
   it("plays 2D-by-name at volume 1 regardless of the definition's volume and distances", () => {
     const { mixer, backend } = setup([sample("message", 0.3)], [def("message", "message", { volume: 0.7, maxDistance: 200 })]);
     expect(mixer.play2DByName("message")).toBe(true);
