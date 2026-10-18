@@ -2,11 +2,15 @@
  * The browser tab's icon: the main menu's logo (logo.pic / logo_us.pic, the picture FUN_004210e0
  * draws above the menu), taken from the game files the port reads at run time. Nothing is
  * stored with the port; index.html carries an empty icon until the menu archive is decoded.
+ * The gunman in the logo is a cut-out (alpha 0) that the menu's dark backdrop fills, so the
+ * icon gets a dark backing too: on a light tab strip the figure would vanish.
  */
 import type { DecodedTexture } from "../../contracts";
 
 /** Icon edge in pixels (browsers scale it down for the tab). */
 const SIZE = 64;
+/** The backing: a near-black green rounded square (the menu backdrop's tone) and the margin inside it. */
+const BACKING = { colour: "#06140a", radius: 10, margin: 3 } as const;
 
 /** The bounding box of the picture's opaque pixels, or null when it has none. */
 export function opaqueBounds(pic: DecodedTexture): { x: number; y: number; w: number; h: number } | null {
@@ -27,11 +31,11 @@ export function opaqueBounds(pic: DecodedTexture): { x: number; y: number; w: nu
 }
 
 /**
- * The emblem of logo.pic (295 x 107, measured): the "G" with the gunman, columns 75..216 and
- * rows 10..103 (under the "P R O J E C T" row). The whole logo is about 3:1 and shrinks to a
- * strip in a square tab icon; the emblem stays readable at 16 px.
+ * The emblem of logo.pic (295 x 107, measured): the "G" with the gunman and his rifle, columns
+ * 95..206 and rows 10..103 (under the "P R O J E C T" row), nearly square. The whole logo is
+ * about 3:1 and shrinks to a strip in a square tab icon; the emblem stays readable at 16 px.
  */
-export const LOGO_EMBLEM = { width: 295, height: 107, x: 75, y: 10, w: 142, h: 94 } as const;
+export const LOGO_EMBLEM = { width: 295, height: 107, x: 95, y: 10, w: 112, h: 94 } as const;
 
 /** The part of the logo shown as the icon: the emblem when `pic` is logo.pic, else its opaque pixels. */
 export function iconRegion(pic: DecodedTexture): { x: number; y: number; w: number; h: number } | null {
@@ -55,7 +59,13 @@ export function setFaviconFromPicture(pic: DecodedTexture): boolean {
   const octx = out.getContext("2d");
   if (!sctx || !octx) return false;
   sctx.putImageData(new ImageData(new Uint8ClampedArray(pic.rgba), pic.width, pic.height), 0, 0);
-  const scale = Math.min(SIZE / box.w, SIZE / box.h);
+  octx.fillStyle = BACKING.colour;
+  octx.beginPath();
+  if (typeof octx.roundRect === "function") octx.roundRect(0, 0, SIZE, SIZE, BACKING.radius);
+  else octx.rect(0, 0, SIZE, SIZE);
+  octx.fill();
+  const inner = SIZE - 2 * BACKING.margin;
+  const scale = Math.min(inner / box.w, inner / box.h);
   const w = box.w * scale;
   const h = box.h * scale;
   octx.imageSmoothingEnabled = true;

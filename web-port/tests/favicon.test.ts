@@ -15,7 +15,7 @@ describe("tab icon (ui/favicon.ts)", () => {
 
   it("shows the emblem of logo.pic (295 x 107) and the whole of any other picture", () => {
     const logo = pic(LOGO_EMBLEM.width, LOGO_EMBLEM.height, [[0, 0]]);
-    expect(iconRegion(logo)).toEqual({ x: 75, y: 10, w: 142, h: 94 });
+    expect(iconRegion(logo)).toEqual({ x: 95, y: 10, w: 112, h: 94 });
     expect(iconRegion(pic(20, 10, [[1, 1], [18, 8]]))).toEqual({ x: 1, y: 1, w: 18, h: 8 });
   });
 
