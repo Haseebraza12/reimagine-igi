@@ -17,3 +17,5 @@ web-port/public/generated/
 web-port/dist/
 *.tsbuildinfo
 
+.vercel
+.env*
